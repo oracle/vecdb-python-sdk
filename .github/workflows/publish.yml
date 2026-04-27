@@ -1,0 +1,89 @@
+name: Publish MyFoo SDK
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write  # Required for Trusted Publisher OIDC
+
+# Publish job triggered manually via workflow_dispatch
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    environment: myfoo-sdk-release
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository to access changelog
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Download artifacts from latest run of Build MyFoo SDK workflow
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Use gh to find and download the artifact
+        run: |
+          mkdir -p dist
+          gh run download --name myfoo-sdk-artifacts --dir dist --repo ${{ github.repository }}
+      
+      # Publish to PyPI via Trusted Publisher (OIDC)
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+      # Extract release notes from CHANGELOG.rst
+      - name: Extract release notes
+        id: release_notes
+        shell: python
+        run: |
+          import re
+          import sys
+          import os
+          from pathlib import Path
+
+          # 1. Prepare version string
+          tag = "${{ github.ref_name }}"
+          version = tag.lstrip("v")
+          
+          # 2. Load file
+          changelog_path = Path("CHANGELOG.rst")
+          if not changelog_path.exists():
+              print(f"::error::CHANGELOG.rst not found")
+              sys.exit(1)
+          
+          content = changelog_path.read_text()
+
+          # 3. Regex Breakdown:
+          # ^ matches start of line (due to MULTILINE)
+          # {version} \s+ - \s+ \d{{4}}... matches "1.0.0 - 2026-02-18"
+          # \n-+ matches the underline of dashes/equals
+          # (.*?) captures the body until the next version header or end of file (\Z)
+          pattern = re.compile(
+              rf"^{re.escape(version)}\s+-\s+\d{{4}}-\d{{2}}-\d{{2}}\n-+\n(.*?)(?=\n\d+\.\d+\.\d+\s+-\s+\d{{4}}-\d{{2}}-\d{{2}}\n-+|\Z)",
+              re.DOTALL | re.MULTILINE
+          )
+
+          match = pattern.search(content)
+          
+          if match:
+              notes = match.group(1).strip()
+          else:
+              print(f"::warning::No section found for version {version}")
+              notes = "No release notes found in CHANGELOG.rst"
+
+          # 4. The "Heredoc" method for multi-line GitHub outputs
+          # This writes to the unique file path provided by the runner environment
+          output_file = os.environ['GITHUB_OUTPUT']
+          with open(output_file, 'a') as f:
+              f.write(f"RELEASE_NOTES<<EOF\n{notes}\nEOF\n")
+
+      # Create GitHub Release
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "${{ github.ref_name }}" \
+            --notes "${{ steps.release_notes.outputs.RELEASE_NOTES }}"
