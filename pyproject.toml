@@ -1,0 +1,99 @@
+[project]
+name = "oracle-vecdb"
+dynamic = ["version"]
+description = "Oracle VecDB Python SDK"
+authors = [
+  {name = "Oracle"},
+]
+license = "UPL-1.0"
+license-files = ["LICENSE.txt"]
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+keywords = ["Oracle", "vecdb", "vector", "database", "ords", "sdk"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Database :: Database Engines/Servers",
+  "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+  "urllib3 (>=2.1.0,<3.0.0)",
+  "python-dateutil (>=2.8.2)",
+  "pydantic (>=2)",
+  "typing-extensions (>=4.7.1)",
+]
+
+[project.optional-dependencies]
+# DEV/QA/Doc Dependencies (installed only when requested)
+dev = [
+    "black",                    # Code formatter
+    "flake8",                   # Linter
+    "mypy",                     # Type check
+    "bandit",                   # Security check
+    "types-python-dateutil",    # Type stubs
+    "build",                    # Build wheel
+    "tox",
+    "oci-cli",
+]
+test = [
+    "pytest",                   # Testing framework
+    "pytest-cov",               # Test coverage tool
+    "pytest-mock",              # Mocker
+    "pytest-xdist",             # Parallel test execution
+    "lxml",                     # Generate XML report
+]
+
+doc = [
+    "sphinx",                   # For SDK's doc 
+    "sphinx_autodoc_typehints",
+    "sphinx-rtd-theme",
+]
+
+[project.urls]
+Repository = "https://github.com/oracle/vecdb-python-sdk"
+Homepage = "https://docs.oracle.com/en-us/iaas/tools/vecdb/latest/index.html"
+
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "oracle_vecdb.version.SDK_VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+target-version = ['py310']
+line-length = 80
+
+[tool.flake8]
+# E203: Whitespace before ':' (Black adds this for slicing)
+# E266: Too many leading '#' for block comment
+# E501: Line too long
+# W503: Line break before binary operator (Black enforces this)
+extend-ignore = "E203, E266, E501, W503"
+per-file-ignores = [
+  "src/oracle_vecdb/services/ords/api/*: F401, F811, F841",
+  "src/oracle_vecdb/services/ords/api_client.py: F401",
+  "src/oracle_vecdb/services/ords/models/*: F811",
+]
+
+[tool.mypy]
+python_version = "3.10"
+
+[tool.pytest.ini_options]
+# Keep stdout/stderr in JUnit XML so generated HTML reports show output for
+# both passing and failing integration tests.
+junit_logging = "all"
+junit_log_passing_tests = true

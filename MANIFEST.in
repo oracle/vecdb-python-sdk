@@ -1,0 +1,2 @@
+include LICENSE.txt README.md CHANGELOG.rst pyproject.toml
+recursive-include examples *.py
