@@ -24,14 +24,14 @@ DOC_ZIP_PREFIX = $(SDK_NAME)-api-ref
 
 # Optional flag to enable report generation. Use 'gmake <target> REPORT=1'
 REPORT ?= 
-INTEGRATION_TEST_WORKERS ?= 8
-DEBUG ?= 0
+INTEGRATION_TEST_WORKERS ?= 10
+DEBUG ?= 1
 INTEGRATION_TEST_PARALLEL_FILES ?= 
 # Kept for callers that select a subset of files.  Those files are added to
 # the same bounded xdist pool; a second pool oversubscribes the VecDB service.
 INTEGRATION_TEST_SERIAL_FILES ?= 
 CI_PROJECT_DIR ?= .
-WORKER_SCHEDULE ?= worksteal
+WORKER_SCHEDULE ?= loadfile
 REPORT_DIR = $(CI_PROJECT_DIR)/reports
 LINT_REPORT_DIR = $(REPORT_DIR)/lint
 TYPE_CHECK_REPORT_DIR = $(REPORT_DIR)/type_check

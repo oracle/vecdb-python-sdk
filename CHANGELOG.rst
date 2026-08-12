@@ -6,7 +6,17 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
-1.0.0 - 2026-07-15
+1.0.1 - 2026-08-10
+------------------
+
+Changed
+~~~~~~~
+
+- Updated the README quickstart and sample snippets to match the published
+  Python SDK quickstart, including requirements, BYOV ingestion, HNSW indexes,
+  and query-time tuning.
+
+1.0.0 - 2026-08-07
 ------------------
 
 Added
@@ -46,9 +56,3 @@ Added
 
 - Limited Availability release.
 - Support for vector table management, indexing, search, and inference operations in Oracle AI Database (26ai+).
-
-
-Compatibility
-----------
-Requires - Oracle AI Database 23.26.3 and later with ORDS 26.2.2 and later
-Supported languages: Python 3.10+

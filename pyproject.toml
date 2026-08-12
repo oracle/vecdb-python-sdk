@@ -58,7 +58,7 @@ doc = [
 
 [project.urls]
 Repository = "https://github.com/oracle/vecdb-python-sdk"
-Homepage = "https://docs.oracle.com/en-us/iaas/tools/vecdb/latest/index.html"
+Homepage = "https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html"
 
 [build-system]
 requires = ["setuptools>=65", "wheel"]

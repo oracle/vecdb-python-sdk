@@ -8,8 +8,9 @@
 
 ## 🚀 About
 
-Oracle VecDB Python SDK is the Python client for the Oracle AI Database (26ai+). It covers both Autonomous AI Vector Database deployments and customer-managed Oracle AI Database instances where ORDS is enabled, offering simple APIs for vector table management, indexing, search, and inference operations.
+Oracle VecDB Python SDK provides a Python-native interface for building vector search and AI applications with Oracle AI Database 23.26.3 and later. It supports both Autonomous AI Vector Database deployments and customer-managed Oracle AI Database instances exposed through ORDS 26.2.2 or later.
 
+The SDK provides straightforward APIs for creating and managing vector tables and indexes, executing vector similarity searches, and invoking inference operations—allowing developers to integrate Oracle AI Database vector capabilities into Python applications with minimal setup and boilerplate.
 
 ## ✨ Highlights
 
@@ -18,17 +19,32 @@ Oracle VecDB Python SDK is the Python client for the Oracle AI Database (26ai+).
 - 🧠 Run embeddings & inference flows via Oracle AI Database models
 - 🔄 Integrate vector search, filtering, and RAG-style pipelines quickly
 
-
 ## 📦 Installation
 
 ```bash
-pip install oracle-vecdb
+python -m pip install --upgrade oracle-vecdb
 ```
 
-**Requires:** Python 3.10+
-
-
 ## 🚀 Quickstart
+
+See the [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/quickstart.html)
+for installation, pre-requisites, and the complete API reference.
+
+This quickstart connects to Oracle VecDB, creates a table with integrated
+embeddings, loads sample records, and runs a filtered similarity search.
+Most SDK methods return typed response models. Import stable SDK response types
+from `oracle_vecdb.data_types`, and use `.model_dump()` or `.to_dict()` when
+you need a plain dictionary representation.
+
+### 1. Configure the client
+
+VecDB `rest_url` has this form but it might change based on the setup:
+
+```text
+https://<host>:<port>/ords/<schema>/_/db-api/stable/vecdb/
+```
+
+**Note:** Ensure TLS is enabled and that the endpoint is reachable from your environment.
 
 ```python
 from oracle_vecdb import OracleVecDB, Configuration
@@ -41,7 +57,17 @@ config = Configuration(
 )
 
 vecdb = OracleVecDB(config)
+```
 
+For all constructor parameters and object attributes, see the
+[Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/configuration.html).
+
+### 2. Create an integrated embedding vector table
+
+Create a table that generates embeddings from text stored in metadata. The
+configured model must already be available in Oracle AI Database.
+
+```python
 vecdb.create_vector_table(
     name="demo",
     table_params={"auto_generate_id": True},
@@ -50,7 +76,15 @@ vecdb.create_vector_table(
         "embed_metadata_jsonpath": "content",  # JSON field in metadata to extract text from for embedding
     },
 )
+```
 
+### 3. Load integrated embedding records
+
+When an integrated embedding vector table is configured, provide text in the
+metadata field selected by `embed_metadata_jsonpath`. The database generates
+the vector during the upsert.
+
+```python
 vecdb.upsert_vectors(
     table_name="demo",
     vectors=[
@@ -70,7 +104,14 @@ vecdb.upsert_vectors(
         },
     ],
 )
+```
 
+### 4. Run a text query with filtering
+
+A text query uses the table's configured embedding model to generate the query
+vector.
+
+```python
 results = vecdb.query(
     table_name="demo",
     query_by={"text": "family drama"},  # uses integrated embeddings for the query text
@@ -88,47 +129,20 @@ for index in range(len(results)):
 
 #### Bring your own vectors
 
+For precomputed embeddings, omit `embed_params` when creating the vector table
+and provide `dense_vector` values in each record.
+
 ```python
-vecdb.create_vector_table(name="demo")
-# Large inline datasets >32MB are automatically split into bounded requests.
-# Batching preserves order but does not deduplicate IDs or guarantee avoidance
-# of service rate limits.
-response = vecdb.upsert_vectors(
-    table_name="demo",
+vecdb.create_vector_table(name="demo_byov")
+vecdb.upsert_vectors(
+    table_name="demo_byov",
     vectors=[
         {"id": "1", "dense_vector": [0.1, 0.1], "metadata": {"genre": "comedy"}},
         {"id": "2", "dense_vector": [0.2, 0.2], "metadata": {"genre": "drama"}},
     ],
 )
-print(response.upserted_count)
-```
-
-For huge dataset, prefer asynchronous bulk loading from object
-storage instead of sending a large inline JSON request. This avoids keeping
-the complete dataset in the request body and is better suited to production
-ingestion workloads:
-
-```python
-load_job = vecdb.load_vectors(
-    table_name="demo",
-    url="https://objectstorage.<region>.oraclecloud.com/<namespace>/<bucket>/vectors.csv",
-    params={"credential": "<oci-credential-name>"},
-)
-
-status = vecdb.describe_vector_load_job(load_job.job_name)
-print(status.state)
-```
-
-The CSV should contain `id`, `dense_vector`, and `metadata` columns. Use an
-OCI credential configured for the database when the object is not publicly
-readable. Do not place signed URLs or credentials directly in application
-logs. `upsert_vectors` remains useful for small inline batches and is
-automatically split below the service JSON limit, but it does not replace
-bulk loading for large files.
-
-```python
 results = vecdb.query(
-    table_name="demo",
+    table_name="demo_byov",
     query_by={"vector": [0.15, 0.1]},
     filters={"genre": {"$eq": "drama"}},
     top_k=1,
@@ -138,33 +152,28 @@ for index in range(len(results)):
     item = results[index]
     row = item if isinstance(item, dict) else item.model_dump()
     print(row["metadata"]["genre"])
-
-# Collection endpoints support ORDS pagination. Existing calls without these
-# arguments retain the server's default page size.
-tables_page = vecdb.list_vector_tables(limit=25, offset=25)
-models_page = vecdb.list_models(limit=25, offset=0)
 ```
 
-### 🔧 Indexing & tuning
+### 🔧 Indexing and tuning
 
-Delay index creation until `create_index()`
+#### Create indexes after loading data
+
+Create the table first and build its index explicitly when the data-loading
+workflow is complete.
 
 ```python
 vecdb.create_vector_table(
-    name="demo_byuser",
-    index_params={
-        "vector_index_params": {
-            "auto_index": False,
-        }
-    },
+    name="demo_manual",
+    index_params={"vector_index_params": {"auto_index": False}},
 )
 
-vecdb.create_index(
-    table_name="demo_byuser",
-)
+vecdb.create_index(table_name="demo_manual")
 ```
 
-Create HNSW index instead of default IVF
+#### Create an HNSW index
+
+Use `INMEMORY GRAPH` organization for an HNSW (Hierarchical Navigable Small
+World) vector index.
 
 ```python
 vecdb.create_vector_table(
@@ -183,7 +192,11 @@ vecdb.create_vector_table(
 )
 ```
 
-Query-time HNSW tuning
+#### Query-time HNSW tuning
+
+Use `advanced_options` to adjust HNSW runtime search behavior. `efsearch` is
+HNSW-only; use it to control the candidate pool size and balance recall against
+query latency without rebuilding the index.
 
 ```python
 results = vecdb.query(
@@ -199,28 +212,32 @@ results = vecdb.query(
 )
 ```
 
+## Examples
 
-## 🧪 Sample notebooks & apps
-
+- Samples can be found in the [/examples](./examples/) directory.
 - [Sample notebooks](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb) – Guided notebooks for setup, table/index workflows, vector search, and inference via the SDK.
 - [Sample applications](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb) – Oracle AI Developer Hub apps showcasing ingestion, embeddings, search, filtering, and FastAPI + React/Vite integration using this SDK.
 
-## 📚 Documentation & Resources
+## Dependencies and Interoperability
 
-Most SDK methods return typed response models. Import stable SDK response types
-from `oracle_vecdb.data_types`, and use `.model_dump()` or `.to_dict()` when
-you need a plain dictionary representation.
+- Python 3.10 or later.
+- Oracle AI Database 23.26.3 or later with ORDS 26.2.2+ enabled.
+- An Oracle ORDS VecDB endpoint configured with either bearer-token or HTTP Basic authentication.
 
-- [Autonomous AI Vector Database docs](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database)
-- [Autonomous AI Vector Database setup guide](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vecdb/get-started-using-autonomous-ai-vector-database.html)
-- [Customer-managed Oracle AI Database (26ai+) requirements](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.2/) – DB 23.26.3+ with ORDS 26.2.2+, plus TLS/ORDS notes for handling self-signed certificates
-- [Quickstart guide](./docs/source/quickstart.rst)
-- [Installation notes](./docs/source/installation.rst)
-- [API reference](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/index.html)
-- [Changelog](./CHANGELOG.rst)
-- [Examples](./examples/test_client.py)
+The SDK can be used in applications, notebooks, retrieval-augmented generation
+(RAG) pipelines, and other Python services that need Oracle vector search.
+For setup instructions and guidance on getting started with the VecDB APIs, see the [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html)
 
+## 📚 Documentation and Resources
 
+- [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html) - for detailed API documentation, including features, usage, and reference information.
+- [Customer-managed Oracle AI Database (26ai+) requirements](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.2/) – DB 23.26.3+ with ORDS 26.2.2+, plus TLS/ORDS notes for handling self-signed certificates.
+
+## Help
+
+Questions can be asked in [GitHub Discussions](https://github.com/oracle/vecdb-python-sdk/discussions).
+
+Problem reports can be raised in [GitHub Issues](https://github.com/oracle/vecdb-python-sdk/issues).
 
 ## 🤝 Contributing
 
