@@ -1,122 +1,61 @@
-# Oracle VecDB Python SDK &nbsp;⚡️
+# Oracle VecDB Python SDK
 
-<p align="center">
-  <img src="https://img.shields.io/pypi/v/oracle-vecdb?color=%23f80000&label=PyPI&logo=python" alt="PyPI">
-  <img src="https://img.shields.io/pypi/pyversions/oracle-vecdb.svg?logo=python&label=Python" alt="Python Versions">
-  <img src="https://img.shields.io/badge/status-active-success?style=flat" alt="Status">
-</p>
+**Build vector search, RAG, and AI applications on Oracle AI Database - from Python.**
+Keep vectors alongside your operational data, combine semantic similarity with relational and spatial filtering, and build retrieval applications without introducing a separate vector database.
 
-## 🚀 About
+[![PyPI](https://img.shields.io/pypi/v/oracle-vecdb)](https://pypi.org/project/oracle-vecdb/)
+[![Python](https://img.shields.io/pypi/pyversions/oracle-vecdb)](https://pypi.org/project/oracle-vecdb/)
+[![License](https://img.shields.io/github/license/oracle/vecdb-python-sdk)](LICENSE.txt)
 
-Oracle VecDB Python SDK provides a Python-native interface for building vector search and AI applications with Oracle AI Database 23.26.3 and later. It supports both Autonomous AI Vector Database deployments and customer-managed Oracle AI Database instances exposed through ORDS 26.2.2 or later.
+**⭐ [Star `oracle/vecdb-python-sdk`](https://github.com/oracle/vecdb-python-sdk) to follow the project and help more developers discover it.**
 
-The SDK provides straightforward APIs for creating and managing vector tables and indexes, executing vector similarity searches, and invoking inference operations—allowing developers to integrate Oracle AI Database vector capabilities into Python applications with minimal setup and boilerplate.
+**[Quickstart](#-quickstart) · [Sample Apps](#-see-what-you-can-build) · [Notebooks](#-hands-on-notebooks) · [Docs](#-documentation) · [Releases](https://github.com/oracle/vecdb-python-sdk/releases)**
 
-## ✨ Highlights
-
-- 🔐 Typed client with simple auth + configuration
-- 📦 Manage vector tables, vector indexes, and metadata programmatically
-- 🧠 Run embeddings & inference flows via Oracle AI Database models
-- 🔄 Integrate vector search, filtering, and RAG-style pipelines quickly
-
-## 📦 Installation
-
-```bash
-python -m pip install --upgrade oracle-vecdb
-```
+---
 
 ## 🚀 Quickstart
 
-See the [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/quickstart.html)
-for installation, pre-requisites, and the complete API reference.
+### Requirements
 
-This quickstart connects to Oracle VecDB, creates a table with integrated
-embeddings, loads sample records, and runs a filtered similarity search.
-Most SDK methods return typed response models. Import stable SDK response types
-from `oracle_vecdb.data_types`, and use `.model_dump()` or `.to_dict()` when
-you need a plain dictionary representation.
+- **Python:** 3.10+
+- **Oracle AI Database:** 23.26.3+
+- **ORDS:** 26.2.2+
 
-### 1. Configure the client
+### Installation
 
-VecDB `rest_url` has this form but it might change based on the setup:
+Install with `pip` or `uv`:
 
-```text
-https://<host>:<port>/ords/<schema>/_/db-api/stable/vecdb/
+```bash
+# pip
+pip install oracle-vecdb
+
+# uv
+uv add oracle-vecdb
 ```
 
-**Note:** Ensure TLS is enabled and that the endpoint is reachable from your environment.
+### Connect
 
 ```python
 from oracle_vecdb import OracleVecDB, Configuration
 
 config = Configuration(
     rest_url="https://<host>:<port>/ords/<schema>/_/db-api/stable/vecdb/",
-    # choose one auth method
-    access_token="<bearer-token>",
-    # or username="<user>", password="<pass>",
+    access_token="<access-token>",
 )
 
 vecdb = OracleVecDB(config)
 ```
 
-For all constructor parameters and object attributes, see the
-[Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/configuration.html).
+### Run a semantic search with metadata filtering
 
-### 2. Create an integrated embedding vector table
-
-Create a table that generates embeddings from text stored in metadata. The
-configured model must already be available in Oracle AI Database.
-
-```python
-vecdb.create_vector_table(
-    name="demo",
-    table_params={"auto_generate_id": True},
-    embed_params={
-        "model": "all_MiniLM_L12_v2",  # must be preloaded via Vector Database Console or load_model()
-        "embed_metadata_jsonpath": "content",  # JSON field in metadata to extract text from for embedding
-    },
-)
-```
-
-### 3. Load integrated embedding records
-
-When an integrated embedding vector table is configured, provide text in the
-metadata field selected by `embed_metadata_jsonpath`. The database generates
-the vector during the upsert.
-
-```python
-vecdb.upsert_vectors(
-    table_name="demo",
-    vectors=[
-        {
-            "metadata": {
-                "title": "Comedy movie review",
-                "content": "A lighthearted comedy with fast-paced jokes.",  # text to embed
-                "genre": "comedy",
-            }
-        },
-        {
-            "metadata": {
-                "title": "Drama movie review",
-                "content": "An emotional family drama with strong performances.",
-                "genre": "drama",
-            }
-        },
-    ],
-)
-```
-
-### 4. Run a text query with filtering
-
-A text query uses the table's configured embedding model to generate the query
-vector.
+> This example assumes a vector table named demo already exists and contains data. See the [full quickstart](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/quickstart.html) for create_vector_table() and upsert().
 
 ```python
 results = vecdb.query(
     table_name="demo",
-    query_by={"text": "family drama"},  # uses integrated embeddings for the query text
+    query_by={"text": "family film"},  # uses integrated embeddings for the query text
     filters={"genre": {"$eq": "drama"}},
-    top_k=1,
+    top_k=3,
 )
 
 for index in range(len(results)):
@@ -125,92 +64,120 @@ for index in range(len(results)):
     print(row["id"], row["distance"], row["metadata"])
 ```
 
-### 📥 Ingestion Options
+### ⚡ **Integrated embeddings. Automatic vector indexing. Semantic search + structured filtering. One Python SDK.**
 
-#### Bring your own vectors
+[Read the full quickstart →](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/quickstart.html)
 
-For precomputed embeddings, omit `embed_params` when creating the vector table
-and provide `dense_vector` values in each record.
+---
 
-```python
-vecdb.create_vector_table(name="demo_byov")
-vecdb.upsert_vectors(
-    table_name="demo_byov",
-    vectors=[
-        {"id": "1", "dense_vector": [0.1, 0.1], "metadata": {"genre": "comedy"}},
-        {"id": "2", "dense_vector": [0.2, 0.2], "metadata": {"genre": "drama"}},
-    ],
-)
-results = vecdb.query(
-    table_name="demo_byov",
-    query_by={"vector": [0.15, 0.1]},
-    filters={"genre": {"$eq": "drama"}},
-    top_k=1,
-)
+# 🧪 See what you can build
 
-for index in range(len(results)):
-    item = results[index]
-    row = item if isinstance(item, dict) else item.model_dump()
-    print(row["metadata"]["genre"])
-```
+Complete applications built with `oracle-vecdb` are available in the [Oracle AI Developer Hub](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb).
 
-### 🔧 Indexing and tuning
+## 🌲 Semantic + Geospatial Search
 
-#### Create indexes after loading data
+**Combine vector similarity with spatial filtering in one application.**
 
-Create the table first and build its index explicitly when the data-loading
-workflow is complete.
+Semantic search plus geographic and structured constraints, powered by Oracle AI Database.
 
-```python
-vecdb.create_vector_table(
-    name="demo_manual",
-    index_params={"vector_index_params": {"auto_index": False}},
-)
+![Ask the Parks — semantic, metadata, and spatial search with Oracle VecDB](https://raw.githubusercontent.com/oracle-devrel/oracle-ai-developer-hub/main/apps/vecdb/vecdb_ask_parks/static/assets/ask_the_parks_demo.gif)
 
-vecdb.create_index(table_name="demo_manual")
-```
+**Oracle Spatial · Vector Search · Oracle VecDB**
 
-#### Create an HNSW index
+[View the sample app →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb/vecdb_ask_parks)
 
-Use `INMEMORY GRAPH` organization for an HNSW (Hierarchical Navigable Small
-World) vector index.
+---
 
-```python
-vecdb.create_vector_table(
-    name="demo_hnsw",
-    index_params={
-        "vector_index_params": {
-            "auto_index": True,
-            "organization": "INMEMORY GRAPH",  # HNSW-style index organization
-            "distance_metric": "COSINE",
-            "advanced_params": {
-                "neighbors": 32,  # higher = better recall, more memory
-                "efConstruction": 200,  # higher = better recall, slower index build
-            },
-        },
-    },
-)
-```
+## 💻 Semantic Code Search
 
-#### Query-time HNSW tuning
+**Search source code by meaning, not just keywords.**
 
-Use `advanced_options` to adjust HNSW runtime search behavior. `efsearch` is
-HNSW-only; use it to control the candidate pool size and balance recall against
-query latency without rebuilding the index.
+Use natural-language queries to find relevant functions, files, and surrounding code.
 
-```python
-results = vecdb.query(
-    table_name="demo",
-    query_by={"text": "family drama"},
-    filters={"genre": {"$eq": "drama"}},
-    top_k=1,
-    advanced_options={
-        "idx_parameters": {
-            "efsearch": 64,  # number of candidates explored (higher = better recall, higher latency)
-        }
-    },
-)
-```
+![Semantic Code Search - natural-language query, ranked code results, repository navigation, and highlighted source code](https://raw.githubusercontent.com/oracle-devrel/oracle-ai-developer-hub/main/apps/vecdb/semantic_code_search/images/semantic_code_search.gif)
+
+**FastAPI · React · Jina Embeddings · Oracle VecDB**
+
+[View the sample app →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb/semantic_code_search)
+
+---
+
+## 🤖 RAG Document Chatbot
+
+**Upload documents and ask grounded questions over their content.**
+
+Chunk documents, generate embeddings, retrieve relevant context, and pass it to an LLM for grounded answers.
+
+![Document Chatbot UI showing uploaded documents, a user question, retrieved context, and a grounded answer](https://raw.githubusercontent.com/oracle-devrel/oracle-ai-developer-hub/main/apps/vecdb/doc_chatbot/images/doc_chat_bot.gif)
+
+**Streamlit · OpenAI / Ollama · Oracle VecDB**
+
+[View the sample app →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb/doc_chatbot)
+
+---
+
+**More examples:** Multi-Modal Product Search, Product Recommendations · hands-on notebooks
+
+[Explore all sample applications →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb)
+
+---
+
+# 💡 Why Oracle VecDB?
+
+Modern AI applications often need vector search plus the structured data around each result.
+
+Oracle VecDB lets Python applications use vector search alongside relational, spatial, and all other capabilities of the Oracle AI Database.
+
+Use Oracle VecDB to:
+
+- 🔎 Run semantic and similarity search
+- 🌍 Combine vector search with spatial and structured queries
+- 🤖 Build RAG applications and AI agents
+- 🧠 Use integrated embeddings or bring your own vectors
+- ⚡ Create vector indexes automatically by default
+- 🎛️ Tune HNSW and embedding settings when needed
+
+If you're building enterprise AI apps, the data you need is probably already in an Oracle AI Database, VecDB can reduce the need to move or synchronize that data into a separate vector database.
+
+---
+
+# 📓 Hands-on notebooks
+
+Learn Oracle VecDB hands-on. The Oracle AI Developer Hub includes runnable notebooks that take you from first query to production-oriented tuning.
+
+## 🧠 Embeddings & RAG
+
+- **Integrated embeddings** — generate embeddings as part of the VecDB workflow
+- **Bring Your Own Vectors** — use embeddings from your preferred model or provider
+- **Gemini RAG** — build retrieval-augmented generation with Gemini
+- **OCI Generative AI embeddings** — use OCI-hosted embedding models with VecDB
+- **Oracle Private AI Services Container** - use in an air-gapped environment with OpenAI-style inference layer
+
+[Explore embeddings & RAG notebooks →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)
+
+## 🔎 Search & filtering
+
+- **Semantic search** — retrieve results by meaning rather than keywords
+- **Metadata filtering** — combine vector similarity with structured constraints
+- **Search diagnostics** — inspect and understand vector-search behavior
+- **Financial-data search** — apply vector retrieval to structured financial datasets
+
+[Explore search notebooks →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)
+
+## ⚡ Performance & scale
+
+- **HNSW tuning** — understand and tune vector-index search parameters
+- **Bulk vector loading** — compare approaches for loading larger datasets
+- **Index management** — create, inspect, and manage vector indexes
+- **Maintenance workflows** — operate vector tables and indexes over time
+
+[Explore performance notebooks →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)
+
+> **New to Oracle VecDB?** Start with integrated embeddings and semantic search, then move on to filtering and HNSW tuning.
+
+[Browse all VecDB notebooks →](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)
+
+---
 
 ## Examples
 
@@ -218,20 +185,18 @@ results = vecdb.query(
 - [Sample notebooks](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb) – Guided notebooks for setup, table/index workflows, vector search, and inference via the SDK.
 - [Sample applications](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb) – Oracle AI Developer Hub apps showcasing ingestion, embeddings, search, filtering, and FastAPI + React/Vite integration using this SDK.
 
-## Dependencies and Interoperability
+---
 
-- Python 3.10 or later.
-- Oracle AI Database 23.26.3 or later with ORDS 26.2.2+ enabled.
-- An Oracle ORDS VecDB endpoint configured with either bearer-token or HTTP Basic authentication.
+# 📚 Documentation
 
-The SDK can be used in applications, notebooks, retrieval-augmented generation
-(RAG) pipelines, and other Python services that need Oracle vector search.
-For setup instructions and guidance on getting started with the VecDB APIs, see the [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html)
+- **[Getting Started](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/quickstart.html)**
+- **[Python API Reference](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/python-api-reference.html)**
+- **[Sample Applications](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/apps/vecdb)**
+- **[Hands-on Notebooks](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)**
+- **[GitHub Releases](https://github.com/oracle/vecdb-python-sdk/releases)**
+- **[Locally-managed REST](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.2/)**
 
-## 📚 Documentation and Resources
-
-- [Oracle VecDB documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html) - for detailed API documentation, including features, usage, and reference information.
-- [Customer-managed Oracle AI Database (26ai+) requirements](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.2/) – DB 23.26.3+ with ORDS 26.2.2+, plus TLS/ORDS notes for handling self-signed certificates.
+---
 
 ## Help
 
@@ -239,14 +204,30 @@ Questions can be asked in [GitHub Discussions](https://github.com/oracle/vecdb-p
 
 Problem reports can be raised in [GitHub Issues](https://github.com/oracle/vecdb-python-sdk/issues).
 
+---
+
 ## 🤝 Contributing
 
 This project welcomes contributions from the community. Before submitting a pull request, please [review our contribution guide](./CONTRIBUTING.md)
+
+[Open an issue →](https://github.com/oracle/vecdb-python-sdk/issues)
+
+---
 
 ## 🔐 Security
 
 Please consult the [security guide](./SECURITY.md) for our responsible security vulnerability disclosure process
 
+---
+
 ## 📄 License
 
 See [LICENSE.txt](./LICENSE.txt), [THIRD_PARTY_LICENSE.txt](./THIRD_PARTY_LICENSE.txt), and [NOTICE.txt](./NOTICE.txt).
+
+---
+
+## ⭐ Like Oracle VecDB?
+
+**[Star `oracle/vecdb-python-sdk` →](https://github.com/oracle/vecdb-python-sdk)**
+
+It helps you follow the project and helps other Python and AI developers discover it.
