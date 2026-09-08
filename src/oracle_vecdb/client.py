@@ -43,7 +43,11 @@ from .types import (
     VectorDebugFlags,
     VectorEmbedInputItem,
 )
-from .validation import validate_resource_names
+from .validation import (
+    set_default_arguments,
+    validate_common_spec_arguments,
+    validate_resource_names,
+)
 from .vecdb_exception import VecDBException
 from .vecdb_errors import (
     InvalidTableNameFormatError,
@@ -196,6 +200,7 @@ class OracleVecDB:
     def _get_active_service(self) -> VecDBServiceProtocol:
         return self._get_ords_service()
 
+    @set_default_arguments
     def describe_vector_database(self) -> DatabaseSummaryResponse:
         """
         Get summary statistics for the entire vector database service.
@@ -230,6 +235,7 @@ class OracleVecDB:
         """
         return self._get_active_service().describe_vector_database()
 
+    @set_default_arguments
     def list_vector_tables(
         self, limit: Optional[int] = None, offset: Optional[int] = None
     ) -> VectorTableCollectionResponse:
@@ -327,6 +333,8 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @set_default_arguments
+    @validate_common_spec_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def create_vector_table(
         self,
@@ -490,6 +498,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def describe_vector_table(self, name: str) -> VectorTableResponse:
         """
@@ -563,6 +572,7 @@ class OracleVecDB:
             name=name,
         )
 
+    @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def drop_vector_table(self, name: str) -> DropVectorTableResponse:
         """
@@ -611,6 +621,7 @@ class OracleVecDB:
             name=name,
         )
 
+    @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def update_vector_table_annotation(
         self,
@@ -678,6 +689,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def generate_embedding(
         self,
@@ -757,6 +769,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def upsert_vectors(
         self,
@@ -962,6 +975,8 @@ class OracleVecDB:
             has_count = True
         return total, has_count
 
+    @set_default_arguments
+    @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def list_vectors(
         self,
@@ -1071,6 +1086,7 @@ class OracleVecDB:
         )
 
     # VectorApi methods
+    @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def delete_vectors(
         self,
@@ -1129,6 +1145,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def load_vectors(
         self,
@@ -1226,6 +1243,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     def list_vector_load_jobs(
         self, limit: Optional[int] = None, offset: Optional[int] = None
     ) -> JobCollectionResponse:
@@ -1281,6 +1299,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @set_default_arguments
     @validate_resource_names(load_job_name=InvalidLoadJobNameFormatError)
     def describe_vector_load_job(self, load_job_name: str) -> JobResponse:
         """
@@ -1336,6 +1355,7 @@ class OracleVecDB:
             load_job_name=load_job_name,
         )
 
+    @set_default_arguments
     @validate_resource_names(load_job_name=InvalidLoadJobNameFormatError)
     def get_vector_load_job_log(self, load_job_name: str) -> JobLogResponse:
         """
@@ -1395,6 +1415,8 @@ class OracleVecDB:
         )
 
     # SearchApi methods
+    @set_default_arguments
+    @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def query(
         self,
@@ -1589,6 +1611,8 @@ class OracleVecDB:
 
     # SummaryApi methods
 
+    @set_default_arguments
+    @validate_common_spec_arguments
     def rerank(
         self,
         query: str,
@@ -1699,6 +1723,8 @@ class OracleVecDB:
     # ModelApi methods
 
     # IndexApi methods
+    @set_default_arguments
+    @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def create_index(
         self,
@@ -1729,7 +1755,7 @@ class OracleVecDB:
             may include ``auto_index``, ``include_paths``, and ``exclude_paths``.
 
             Example:
-            ``{'vector_index_params': {'organization': 'INMEMORY GRAPH', 'distance_metric': 'COSINE', 'advanced_params': {'neighbors': 32, 'efConstruction': 200}}, 'parallel_creation': 4}``
+            ``{'vector_index_params': {'organization': 'INMEMORY GRAPH', 'distance_metric': 'COSINE', 'distribute_params': {'distribute_method': 'AUTO'}, 'advanced_params': {'neighbors': 32, 'efConstruction': 200}}, 'parallel_creation': 4}``
 
         :type index_params: dict, optional
         :param debug_flags: Debug configuration for detailed logging.
@@ -1832,6 +1858,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     def list_index_jobs(
         self, limit: Optional[int] = None, offset: Optional[int] = None
     ) -> JobCollectionResponse:
@@ -1878,6 +1905,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @set_default_arguments
     @validate_resource_names(index_job_name=InvalidIndexJobNameFormatError)
     def describe_index_job(self, index_job_name: str) -> JobResponse:
         """
@@ -1941,6 +1969,7 @@ class OracleVecDB:
             index_job_name=index_job_name,
         )
 
+    @set_default_arguments
     @validate_resource_names(index_job_name=InvalidIndexJobNameFormatError)
     def get_index_job_log(self, index_job_name: str) -> JobLogResponse:
         """
@@ -2002,6 +2031,8 @@ class OracleVecDB:
             index_job_name=index_job_name,
         )
 
+    @set_default_arguments
+    @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def rebuild_index(
         self,
@@ -2061,6 +2092,7 @@ class OracleVecDB:
 
     # InferenceApi methods
 
+    @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def describe_index(self, table_name: str) -> IndexDescriptionResponse:
         """
@@ -2099,6 +2131,7 @@ class OracleVecDB:
             table_name=table_name,
         )
 
+    @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def drop_index(
         self,
@@ -2160,6 +2193,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     def list_models(
         self, limit: Optional[int] = None, offset: Optional[int] = None
     ) -> ModelCollectionResponse:
@@ -2229,6 +2263,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def load_model(
         self,
@@ -2322,6 +2357,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def describe_model(self, model_name: str) -> ModelResponse:
         """
@@ -2388,6 +2424,7 @@ class OracleVecDB:
             model_name=model_name,
         )
 
+    @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def drop_model(self, model_name: str) -> DropModelResponse:
         """

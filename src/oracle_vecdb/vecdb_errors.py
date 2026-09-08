@@ -171,3 +171,36 @@ class InvalidIndexJobLogError(VecDBError):
             locale=locale,
             params={"index_job_name": index_job_name, "state": state},
         )
+
+
+class DefaultSettingsParameterMismatchError(VecDBError):
+    """Raised when DefaultSettings references a missing public parameter."""
+
+    def __init__(
+        self,
+        function_name: str,
+        parameter_names: list[str],
+        *,
+        locale=None,
+    ):
+        super().__init__(
+            "",
+            error_code="VECDB-012",
+            locale=locale,
+            params={
+                "function_name": function_name,
+                "parameter_names": ", ".join(parameter_names),
+            },
+        )
+
+
+class InvalidParameterCombinationError(VecDBError):
+    """Raised when JSON request options violate PL/SQL dependency rules."""
+
+    def __init__(self, parameter_name: str, detail: str, *, locale=None):
+        super().__init__(
+            "",
+            error_code="VECDB-013",
+            locale=locale,
+            params={"parameter_name": parameter_name, "detail": detail},
+        )

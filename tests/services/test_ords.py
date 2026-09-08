@@ -161,6 +161,28 @@ def test_response_handler_redispatches_non_retryable_error():
     assert endpoint.calls == 2  # nosec B101
 
 
+def test_ords_service_does_not_attach_raw_transport_error_as_context():
+    service = _make_service()
+
+    class LeakyTransportError(Exception):
+        status = 401
+        reason = "Authorization: Bearer token-value"
+        body = '{"message": "bad token"}'
+        headers = {"Authorization": "Bearer token-value"}
+
+    def fail(_request):
+        raise LeakyTransportError()
+
+    service.table_api.create_vector_table = fail
+
+    with pytest.raises(VecDBException) as error:
+        service.create_vector_table(name="docs")
+
+    assert error.value.__context__ is None  # nosec B101
+    assert "token-value" not in repr(vars(error.value))  # nosec B101
+    assert "bad token" in str(error.value)  # nosec B101
+
+
 def test_create_ords_service_wires_generated_api_delegates(monkeypatch):
     class FakeApiClient:
         def __init__(self, config):
@@ -240,6 +262,52 @@ def test_generated_index_params_accepts_documented_distribution_method():
     assert payload["vector_index_params"]["distribute_params"] == {
         "distribute_method": "AUTO"
     }  # nosec B101
+
+
+def test_ords_service_rejects_graph_index_without_distribution_method():
+    service = _make_service()
+
+    with pytest.raises(
+        VecDBException,
+        match="distribute_params cannot be None.*INMEMORY GRAPH",
+    ):
+        service.create_index(
+            "docs",
+            {
+                "vector_index_params": {
+                    "auto_index": True,
+                    "organization": "INMEMORY GRAPH",
+                    "distance_metric": "COSINE",
+                    "accuracy": 95,
+                    "advanced_params": {
+                        "neighbors": 10,
+                        "efConstruction": 100,
+                    },
+                }
+            },
+        )
+
+    assert service.index_api.calls == []  # nosec B101
+
+
+def test_ords_service_rejects_graph_index_with_null_distribution_params():
+    service = _make_service()
+
+    with pytest.raises(
+        VecDBException,
+        match="distribute_params cannot be None.*INMEMORY GRAPH",
+    ):
+        service.create_index(
+            "docs",
+            {
+                "vector_index_params": {
+                    "organization": "INMEMORY GRAPH",
+                    "distribute_params": None,
+                }
+            },
+        )
+
+    assert service.index_api.calls == []  # nosec B101
 
 
 def test_ords_debug_flag_conversion():
@@ -462,6 +530,75 @@ def test_ords_service_maps_table_inference_and_vector_requests():
     assert embed_request.inputs[1] is embed_item  # nosec B101
     assert upsert_request.vectors[0].id == "v1"  # nosec B101
     assert upsert_request.vectors[1] is vector_item  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "vector, expected",
+    [
+        (
+            {"ID": "v1", "DENSE_VECTOR": [0.1, 0.2], "METADATA": {"a": 1}},
+            {"id": "v1", "dense_vector": [0.1, 0.2], "metadata": {"a": 1}},
+        ),
+        (
+            {"iD": "v2", "dense_Vector": [0.3, 0.4], "mEtAdAtA": {"b": 2}},
+            {"id": "v2", "dense_vector": [0.3, 0.4], "metadata": {"b": 2}},
+        ),
+    ],
+)
+def test_ords_service_normalizes_upsert_field_names_case_insensitively(
+    vector, expected
+):
+    service = _make_service()
+
+    service.upsert_vectors("docs", [vector])
+
+    request = _first_keyword_request(
+        service.vector_api, "upsert_vectors", "upsert_vectors_request"
+    )
+    assert request.vectors[0].to_dict() == expected  # nosec B101
+
+
+def test_ords_service_normalizes_all_records_in_batched_upsert():
+    service = _make_service()
+
+    service.upsert_vectors(
+        "docs",
+        [
+            {"ID": "v1", "DENSE_VECTOR": [0.1], "METADATA": {"a": 1}},
+            {"id": "v2", "Dense_Vector": [0.2], "metadata": {"b": 2}},
+        ],
+    )
+
+    request = _first_keyword_request(
+        service.vector_api, "upsert_vectors", "upsert_vectors_request"
+    )
+    assert [item.to_dict() for item in request.vectors] == [  # nosec B101
+        {"id": "v1", "dense_vector": [0.1], "metadata": {"a": 1}},
+        {"id": "v2", "dense_vector": [0.2], "metadata": {"b": 2}},
+    ]
+
+
+def test_ords_service_rejects_duplicate_case_insensitive_upsert_fields():
+    service = _make_service()
+
+    with pytest.raises(VecDBException, match="Duplicate upsert vector field"):
+        service.upsert_vectors("docs", [{"id": "v1", "ID": "v2"}])
+
+    assert service.vector_api.calls == []  # nosec B101
+
+
+def test_ords_service_rejects_unknown_upsert_fields():
+    service = _make_service()
+
+    with pytest.raises(
+        VecDBException, match="Unknown upsert vector field.*EXTRA"
+    ):
+        service.upsert_vectors(
+            "docs",
+            [{"ID": "v1", "DENSE_VECTOR": [0.1], "EXTRA": "unexpected"}],
+        )
+
+    assert service.vector_api.calls == []  # nosec B101
 
 
 @pytest.mark.parametrize(

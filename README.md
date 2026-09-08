@@ -5,7 +5,7 @@ Keep vectors alongside your operational data, combine semantic similarity with r
 
 [![PyPI](https://img.shields.io/pypi/v/oracle-vecdb)](https://pypi.org/project/oracle-vecdb/)
 [![Python](https://img.shields.io/pypi/pyversions/oracle-vecdb)](https://pypi.org/project/oracle-vecdb/)
-[![License](https://img.shields.io/github/license/oracle/vecdb-python-sdk)](LICENSE.txt)
+[![License](https://img.shields.io/github/license/oracle/vecdb-python-sdk)](./LICENSE.txt)
 
 **⭐ [Star `oracle/vecdb-python-sdk`](https://github.com/oracle/vecdb-python-sdk) to follow the project and help more developers discover it.**
 

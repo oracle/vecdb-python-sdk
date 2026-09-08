@@ -71,6 +71,9 @@ def test_message_response_rejects_missing_message_field():
     with pytest.raises(ValueError, match="missing required field 'message'"):
         DeleteVectorsResponse.from_internal({"status": "ok"})
 
+    with pytest.raises(ValueError, match="missing required field 'message'"):
+        DeleteVectorsResponse.from_internal(AttributeItem(status="ok"))
+
 
 def test_rerank_response_wraps_result_items():
     wrapped = RerankResponse.from_internal([AttributeItem(index=1, score=0.97)])
@@ -181,6 +184,39 @@ def test_vector_table_indexes_normalize_generated_objects():
     ]  # nosec B101
 
 
+def test_index_details_normalizes_existing_sequence_and_serialized_values():
+    existing = IndexDetailsResponse(dense_idx_name="existing")
+
+    assert (
+        IndexDetailsResponse.from_internal(existing) is existing
+    )  # nosec B101
+    assert (
+        IndexDetailsResponse.from_internal(
+            [("dense_idx_name", "from-sequence")]
+        ).dense_idx_name
+        == "from-sequence"
+    )  # nosec B101
+
+    assert (
+        IndexDetailsResponse.from_internal(
+            AttributeItem(
+                dense_idx_name="from-attributes",
+                indexed_metadata_json_paths=["active"],
+            )
+        ).dense_idx_name
+        == "from-attributes"
+    )  # nosec B101
+
+    class SerializedIndexes:
+        def to_dict(self):
+            return {"dense_idx_name": "from-serializer"}
+
+    assert (
+        IndexDetailsResponse.from_internal(SerializedIndexes()).dense_idx_name
+        == "from-serializer"
+    )  # nosec B101
+
+
 def test_query_result_item_normalizes_existing_and_object_values():
     existing = QueryResultItem(id="vec-existing", distance=0.1)
     object_item = AttributeItem(
@@ -228,6 +264,14 @@ def test_query_response_from_generated_query_vectors_response():
 
     assert response.items[0].id == "vec-generated"  # nosec B101
     assert response.items[0].distance == 0.5  # nosec B101
+
+
+def test_query_response_rejects_generated_or_object_response_without_results():
+    with pytest.raises(ValueError, match="missing required field 'results'"):
+        QueryResponse.from_internal(QueryVectors200Response(results=None))
+
+    with pytest.raises(ValueError, match="missing required field 'results'"):
+        QueryResponse.from_internal(AttributeItem())
 
 
 def test_rerank_result_and_response_normalize_dict_and_existing_values():

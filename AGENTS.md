@@ -77,6 +77,16 @@ filters = {
 Use only filter operators documented in `docs/source/rest_api.rst` or verified
 by SDK tests. Do not copy filter syntax from another vector database product.
 
+## Validation
+
+- For SDK source or test changes, run `make check` and `git diff --check`
+  before handoff.
+- Run focused tests for any changed development tool. Run `make build` when
+  packaging or build metadata changes.
+- Run `make integration_test` only when the change can affect live VecDB
+  behavior and the required test environment is configured.
+- Report any required validation that was not run.
+
 ## Quick Start
 
 - Use the `README.md` Quickstart as the source of truth for runnable

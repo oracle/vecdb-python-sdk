@@ -6,6 +6,43 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
+1.0.3 - 2026-09-07
+------------------
+
+Added
+~~~~~
+
+- Added verified public-operation defaults for omitted arguments, including
+  ``create_vector_table.table_params.auto_generate_id``,
+  ``list_vectors.limit``, and ``query.include_vectors``.
+- Added transport-neutral validation for parameter values
+  and cross-field combinations before requests are sent to ORDS.
+- Added explicit authentication-mode detection for unauthenticated, basic,
+  and bearer configurations, including validation of incomplete or conflicting
+  credentials.
+
+Changed
+~~~~~~~
+
+- Resource-name validation now rejects blank values and transport-unsafe NUL
+  or double-quote characters while leaving database-specific identifier rules
+  to Oracle Database.
+- Upsert vector field names are normalized case-insensitively; unknown fields
+  and duplicate fields with different casing now produce clear validation
+  errors.
+- Improved validation and error messages for vector index organizations,
+  distribution settings, quantization, metadata paths, query modes, and other
+  parameter dependencies.
+- Improved ORDS exception normalization and diagnostics by redacting sensitive
+  request and response data, preserving useful error categories, and avoiding
+  duplicate raw transport exception context.
+
+Fixed
+~~~~~
+
+- Fixed graph-index requests that omitted required distribution parameters from
+  reaching the service with an invalid request shape.
+
 1.0.2 - 2026-08-19
 ------------------
 

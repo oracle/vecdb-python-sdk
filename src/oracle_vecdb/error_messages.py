@@ -14,24 +14,24 @@ ERROR_MESSAGES: Mapping[str, Mapping[str, str]] = {
         "action": "Use https://<host>:<port>/ords/<schema>/_/db-api/(stable|<version>)/vecdb/.",
     },
     "VECDB-003": {
-        "message": "Invalid table name format: '{table_name}'.",
-        "cause": "The table name does not match the required format.",
-        "action": "Use only letters, digits, and underscore (_).",
+        "message": "Invalid table name: '{table_name}'.",
+        "cause": "The table name must be non-empty text and must not contain NUL or double-quote characters.",
+        "action": 'Provide a non-empty table name without NUL (`\\x00`) or double-quote (`"`) characters. Other character and length restrictions are determined by the configured Oracle Database.',
     },
     "VECDB-004": {
         "message": "Invalid model name format: '{model_name}'.",
-        "cause": "The model name does not match the required format.",
-        "action": "Use only letters, digits, and underscore (_).",
+        "cause": "The model name must be non-empty text and must not contain NUL or double-quote characters.",
+        "action": 'Provide a non-empty model name without NUL (`\\x00`) or double-quote (`"`) characters. Other character and length restrictions are determined by the configured Oracle Database.',
     },
     "VECDB-005": {
         "message": "Invalid load job name format: '{load_job_name}'.",
-        "cause": "The load job name does not match the required format.",
-        "action": "Use only letters, digits, and underscore (_).",
+        "cause": "The load job name must be non-empty text and must not contain NUL or double-quote characters.",
+        "action": 'Provide a non-empty load job name without NUL (`\\x00`) or double-quote (`"`) characters. Other character and length restrictions are determined by the configured Oracle Database.',
     },
     "VECDB-006": {
         "message": "Invalid index job name format: '{index_job_name}'.",
-        "cause": "The index job name does not match the required format.",
-        "action": "Use only letters, digits, and underscore (_).",
+        "cause": "The index job name must be non-empty text and must not contain NUL or double-quote characters.",
+        "action": 'Provide a non-empty index job name without NUL (`\\x00`) or double-quote (`"`) characters. Other character and length restrictions are determined by the configured Oracle Database.',
     },
     "VECDB-007": {
         "message": (
@@ -67,5 +67,24 @@ ERROR_MESSAGES: Mapping[str, Mapping[str, str]] = {
         ),
         "cause": "The index job has not finished yet.",
         "action": "Wait until the index job reaches a terminal state before fetching its log.",
+    },
+    "VECDB-012": {
+        "message": (
+            "CommonSpec defaults for '{function_name}' do not match public "
+            "parameters: {parameter_names}."
+        ),
+        "cause": (
+            "The CommonSpec catalog references a parameter that the decorated "
+            "function does not accept."
+        ),
+        "action": (
+            "Update CommonSpec or the function signature so their parameter "
+            "names match."
+        ),
+    },
+    "VECDB-013": {
+        "message": "Invalid value or combination for {parameter_name}: {detail}",
+        "cause": "The request violates a deterministic parameter constraint defined by the VecDB PL/SQL API.",
+        "action": "Correct the parameter value or combination and retry the operation.",
     },
 }
