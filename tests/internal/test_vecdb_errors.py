@@ -13,7 +13,11 @@ from oracle_vecdb.vecdb_errors import (
     InvalidIndexJobNameFormatError,
     InvalidHostFormatError,
     InvalidLoadJobNameFormatError,
+    InvalidLoadJobLogError,
+    InvalidIndexJobLogError,
     InvalidModelNameFormatError,
+    DefaultSettingsParameterMismatchError,
+    ResourceNotFoundError,
     InvalidTableNameFormatError,
     VecDBError,
 )
@@ -124,7 +128,7 @@ def test_error_messages_fallback_to_english_for_requested_locale():
 def test_error_messages_fallback_to_english_for_unknown_locale():
     err = InvalidTableNameFormatError("bad table", locale="fr-FR")
 
-    assert "Invalid table name format" in err.get_error()  # nosec B101
+    assert "Invalid table name" in err.get_error()  # nosec B101
     assert "VECDB-003" in err.get_error()  # nosec B101
 
 
@@ -148,3 +152,13 @@ def test_resource_name_errors_include_codes_causes_and_actions(
     assert value in message  # nosec B101
     assert "Cause:" in message  # nosec B101
     assert "Action:" in message  # nosec B101
+    assert "configured Oracle Database" in message  # nosec B101
+    assert "double-quote" in message  # nosec B101
+    assert "only letters, digits, and underscore" not in message  # nosec B101
+
+
+def test_job_and_default_setting_errors_construct_stable_messages():
+    ResourceNotFoundError("missing-resource")
+    InvalidLoadJobLogError("load-job", "RUNNING")
+    InvalidIndexJobLogError("index-job", "RUNNING")
+    DefaultSettingsParameterMismatchError("query", ["missing_parameter"])

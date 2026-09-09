@@ -1,0 +1,32 @@
+# Based on Conventional Commits 1.0.0:
+# Conventional Commit format:
+#   <type>[optional scope][!]: <description>
+#
+# Examples:
+#   feat(query): add metadata filters
+#   fix: handle empty query results
+#   docs!: remove the legacy authentication flow
+#
+# Common types:
+#   feat      New user-visible capability
+#   fix       Corrected behavior or defect
+#   docs      User documentation change
+#   perf      User-visible performance improvement
+#   refactor  Internal restructuring without intended behavior change
+#   test      Test-only change
+#   build     Build or packaging change
+#   ci        Continuous-integration change
+#   chore     Routine maintenance
+#   revert    Revert a previous change
+#   style     Formatting-only change
+#
+# Keep the description concise and imperative. Add an optional body after a
+# blank line to explain motivation or implementation details.
+#
+# Use a footer for issue references or breaking-change details, for example:
+#   BREAKING CHANGE: describe the required migration
+#
+# To omit a redundant entry related to an unreleased feature, use:
+#   Changelog: skip
+# To omit an unreleased feature and the revert that removes it, use:
+#   Changelog: retract <full SHA of the feat commit>

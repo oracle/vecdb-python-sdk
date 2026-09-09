@@ -146,10 +146,11 @@ class ORDSService:
                     service_name=type(self).__name__,
                     error=error,
                 )
-                # The wrapper already contains the complete original ORDS
-                # traceback. Suppress implicit exception chaining so reports
-                # contain one clear template instead of the same failure twice.
-                raise wrapped from None
+            # Raise after leaving the handler. This avoids attaching the raw
+            # transport exception as ``wrapped.__context__``; the wrapper
+            # already contains its sanitized diagnostics.
+            # Suppress implicit chaining so reports contain one clear template.
+            raise wrapped from None
 
         return call_with_context
 
@@ -241,11 +242,22 @@ class ORDSService:
                     "Unsupported vector_index_params field(s): "
                     f"{', '.join(sorted(unknown))}"
                 )
+            organization = vector.get("organization")
+            if organization == "INMEMORY GRAPH" and (
+                "distribute_params" not in vector
+                or vector["distribute_params"] is None
+            ):
+                raise ValueError(
+                    "vector_index_params.distribute_params cannot be None for "
+                    "organization 'INMEMORY GRAPH'; it must contain a valid "
+                    "distribute_method. Valid values are: 'ROWID RANGE', "
+                    "'SIMILARITY', 'PARTITION', "
+                    "'SUBPARTITION', 'DISTRIBUTE', 'AUTO'"
+                )
             if "distribute_params" in vector:
                 distribute = vector["distribute_params"]
-                # The OpenAPI contract declares distribute_params nullable.
-                # Validate its required child field only when an object was
-                # supplied; an explicit null is a valid request value.
+                # ``distribute_params`` is nullable for non-graph index
+                # organizations, but graph indexes require a method.
                 if distribute is None:
                     pass
                 elif not isinstance(distribute, dict):
@@ -270,6 +282,67 @@ class ORDSService:
                     "Unsupported metadata_index_params field(s): "
                     f"{', '.join(sorted(unknown))}"
                 )
+
+    @staticmethod
+    def _normalize_upsert_vector_fields(
+        vector: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize upsert record field names without changing field values."""
+        model = _models.UpsertVectorsRequestVectorsInner
+        supported_fields: Dict[str, str] = {}
+
+        for field_name, field_info in getattr(
+            model, "model_fields", {}
+        ).items():
+            canonical_name = str(field_name)
+            supported_fields[canonical_name.casefold()] = canonical_name
+            alias = getattr(field_info, "alias", None)
+            if alias:
+                supported_fields[str(alias).casefold()] = canonical_name
+
+        for field_name in getattr(model, "__properties", []):
+            canonical_name = str(field_name)
+            supported_fields.setdefault(
+                canonical_name.casefold(), canonical_name
+            )
+
+        normalized: Dict[str, Any] = {}
+        original_names: Dict[str, str] = {}
+        duplicate_names: Dict[str, list[str]] = {}
+        unknown_names: list[str] = []
+
+        for field_name, value in vector.items():
+            if not isinstance(field_name, str):
+                unknown_names.append(repr(field_name))
+                continue
+            matched_name = supported_fields.get(field_name.casefold())
+            if matched_name is None:
+                unknown_names.append(field_name)
+                continue
+            canonical_name = matched_name
+            if canonical_name in normalized:
+                duplicate_names.setdefault(
+                    canonical_name, [original_names[canonical_name]]
+                ).append(field_name)
+                continue
+            normalized[canonical_name] = value
+            original_names[canonical_name] = field_name
+
+        if unknown_names:
+            raise ValueError(
+                "Unknown upsert vector field(s): "
+                f"{', '.join(sorted(unknown_names))}"
+            )
+        if duplicate_names:
+            details = ", ".join(
+                f"{canonical_name} ({', '.join(names)})"
+                for canonical_name, names in sorted(duplicate_names.items())
+            )
+            raise ValueError(
+                "Duplicate upsert vector field(s) with different casing: "
+                f"{details}"
+            )
+        return normalized
 
     @ORDSResponseHandler
     def describe_vector_database(self) -> DatabaseSummaryResponse:
@@ -434,7 +507,9 @@ class ORDSService:
                 vector
                 if isinstance(vector, _models.UpsertVectorsRequestVectorsInner)
                 else _models.UpsertVectorsRequestVectorsInner(
-                    **cast(Dict[str, Any], vector)
+                    **self._normalize_upsert_vector_fields(
+                        cast(Dict[str, Any], vector)
+                    )
                 )
             )
             for vector in (vectors or [])

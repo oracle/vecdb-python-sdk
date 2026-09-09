@@ -31,6 +31,22 @@ git commit --signoff
 Only pull requests from committers that can be verified as having signed the OCA
 can be accepted.
 
+### Commit messages
+
+Use [Conventional Commits][conventional-commits] for commit subjects so future
+release automation can derive changelog entries from commit history. Configure
+the repository template once after cloning:
+
+```bash
+git config --local commit.template .gitmessage
+```
+
+Use this format and retain the OCA sign-off with `git commit -s`:
+
+```text
+<type>[optional scope][!]: <description>
+```
+
 ## Pull request process
 
 1. Ensure there is an issue created to track and discuss the fix or enhancement
@@ -53,3 +69,4 @@ like more specific guidelines, see the [Contributor Covenant Code of Conduct][CO
 
 [OCA]: https://oca.opensource.oracle.com
 [COC]: https://www.contributor-covenant.org/version/1/4/code-of-conduct/
+[conventional-commits]: https://www.conventionalcommits.org/en/v1.0.0/

@@ -13,6 +13,7 @@ import pytest
 import oracle_vecdb.client as client_module
 
 from oracle_vecdb.client import OracleVecDB
+from oracle_vecdb.default_settings import DefaultSettings
 from oracle_vecdb.configuration import Configuration
 from oracle_vecdb.data_types import UpsertVectorsResponse
 from oracle_vecdb.service_protocol import VecDBServiceProtocol
@@ -105,10 +106,147 @@ def test_query_forwards_output_selector_to_active_backend(mocker):
         top_k=3,
         filters=None,
         advanced_options=None,
-        include_vectors=None,
+        include_vectors=False,
         output_selector=["category", "price"],
         debug_flags=None,
     )
+
+
+def test_common_spec_applies_defaults_for_omitted_arguments(mocker):
+    """Verify omitted facade arguments are populated from DefaultSettings.
+
+    This test currently uses the mocked ORDS backend, but it verifies the
+    transport-agnostic OracleVecDB facade contract that a native backend must
+    also receive.  ``table_params`` and ``include_vectors`` are intentionally
+    omitted by the caller and must therefore be obtained from DefaultSettings.
+    """
+    client, active_backend, _ = _make_client(mocker)
+
+    client.create_vector_table(name="docs")
+    client.query(
+        table_name="docs",
+        query_by={"text": "hi"},
+        top_k=3,
+    )
+
+    assert active_backend.calls[0] == (  # nosec B101
+        "create_vector_table",
+        (),
+        {
+            "name": "docs",
+            "comment": None,
+            "annotations": None,
+            "table_params": {"auto_generate_id": False},
+            "embed_params": None,
+            "index_params": None,
+            "debug_flags": None,
+        },
+    )
+    assert active_backend.calls[1][2]["include_vectors"] is False  # nosec B101
+
+
+def test_common_spec_rejects_graph_index_without_distribution_method(mocker):
+    client, active_backend, _ = _make_client(mocker)
+
+    with pytest.raises(
+        VecDBException,
+        match="distribute_params cannot be None.*INMEMORY GRAPH",
+    ):
+        client.create_index(
+            table_name="docs",
+            index_params={
+                "vector_index_params": {"organization": "INMEMORY GRAPH"}
+            },
+        )
+
+    assert active_backend.calls == []  # nosec B101
+
+
+def test_common_spec_rejects_graph_index_with_null_distribution_params(mocker):
+    client, active_backend, _ = _make_client(mocker)
+
+    with pytest.raises(
+        VecDBException,
+        match="distribute_params cannot be None.*INMEMORY GRAPH",
+    ):
+        client.create_index(
+            table_name="docs",
+            index_params={
+                "vector_index_params": {
+                    "organization": "INMEMORY GRAPH",
+                    "distribute_params": None,
+                }
+            },
+        )
+
+    assert active_backend.calls == []  # nosec B101
+
+
+def test_common_spec_honors_scalar_and_nested_caller_overrides(mocker):
+    """Verify DefaultSettings defaults do not override explicit caller values.
+
+    The mocked backend is ORDS, while the behavior belongs to the shared
+    facade contract and applies equally to a future native backend.  DefaultSettings
+    supplies missing nested ``table_params`` keys, but explicit caller values
+    such as ``include_vectors=True`` always take precedence.
+    """
+    client, active_backend, _ = _make_client(mocker)
+
+    client.create_vector_table(
+        name="docs",
+        table_params={"custom_option": {"source": "caller"}},
+    )
+    client.query(
+        table_name="docs",
+        query_by={"text": "hi"},
+        top_k=3,
+        include_vectors=True,
+    )
+
+    assert active_backend.calls[0][2]["table_params"] == {  # nosec B101
+        "auto_generate_id": False,
+        "custom_option": {"source": "caller"},
+    }
+    assert active_backend.calls[1][2]["include_vectors"] is True  # nosec B101
+
+
+def test_common_spec_honors_explicit_none_and_ignores_unknown_operations(
+    mocker,
+):
+    """Verify explicit ``None`` is preserved and unknown specs are a no-op.
+
+    This uses the mocked ORDS backend to exercise facade behavior that must
+    remain transport-neutral for native calls.  Only omitted arguments are
+    obtained from DefaultSettings; explicitly passed ``None`` and operations with
+    no DefaultSettings entry must reach the backend unchanged.
+
+    This test specifically verifies that ``DefaultSettings`` does not override anything:
+
+    - ``table_params=None`` was explicitly supplied, so it remains ``None``.
+    - ``include_vectors=None`` was explicitly supplied, so it remains ``None``.
+    - ``list_models()`` has no ``DefaultSettings`` entry, so its ``limit`` and ``offset`` remain their Python defaults of ``None``.
+    """
+    client, active_backend, _ = _make_client(mocker)
+
+    client.create_vector_table(name="docs", table_params=None)
+    client.query(
+        table_name="docs",
+        query_by={"text": "hi"},
+        top_k=3,
+        include_vectors=None,
+    )
+    client.list_models()
+
+    assert active_backend.calls[0][2]["table_params"] is None  # nosec B101
+    assert active_backend.calls[1][2]["include_vectors"] is None  # nosec B101
+    assert active_backend.calls[2] == (  # nosec B101
+        "list_models",
+        (),
+        {"limit": None, "offset": None},
+    )
+    assert (
+        DefaultSettings.get_default_args_for("list_models") == {}
+    )  # nosec B101
 
 
 @pytest.mark.parametrize(
@@ -404,6 +542,10 @@ def test_facade_delegates_public_methods_to_active_backend(
     bound.apply_defaults()
     expected_kwargs = dict(bound.arguments)
     expected_kwargs.pop("self", None)
+    if method_name == "create_vector_table":
+        expected_kwargs["table_params"] = {"auto_generate_id": False}
+    elif method_name == "query":
+        expected_kwargs["include_vectors"] = False
     result = getattr(client, method_name)(*args, **kwargs)
 
     assert result == {
@@ -524,6 +666,67 @@ def test_facade_rejects_invalid_resource_names(
     assert exception.value.is_original_exception(error_type)  # nosec B101
 
     assert active_backend.calls == []  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "method_name,error_type",
+    [
+        ("describe_vector_table", InvalidTableNameFormatError),
+        ("describe_model", InvalidModelNameFormatError),
+        ("describe_vector_load_job", InvalidLoadJobNameFormatError),
+        ("describe_index_job", InvalidIndexJobNameFormatError),
+    ],
+)
+@pytest.mark.parametrize(
+    "unsafe_name", [b"docs", "\x00", "docs\x00old", 'docs"old']
+)
+def test_facade_rejects_unsafe_resource_name_values(
+    mocker, method_name, error_type, unsafe_name
+):
+    """Reject names that cannot safely retain a resource's text identity."""
+    client, active_backend, _ = _make_client(mocker)
+
+    with pytest.raises(VecDBException) as exception:
+        getattr(client, method_name)(unsafe_name)
+
+    assert exception.value.is_original_exception(error_type)  # nosec B101
+    assert active_backend.calls == []  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "method_name,resource_parameter",
+    [
+        ("describe_vector_table", "name"),
+        ("describe_model", "model_name"),
+        ("describe_vector_load_job", "load_job_name"),
+        ("describe_index_job", "index_job_name"),
+    ],
+)
+@pytest.mark.parametrize(
+    "resource_name",
+    [
+        "my-table",
+        "my.table",
+        "my table",
+        "1st_name",
+        "Delta_名",
+        "my$name",
+        "my#name",
+        "my/name",
+        "my'name",
+    ],
+)
+def test_facade_delegates_database_defined_resource_name_grammar(
+    mocker, method_name, resource_parameter, resource_name
+):
+    """Leave database-specific characters and identifier rules to VecDB."""
+    client, active_backend, _ = _make_client(mocker)
+
+    getattr(client, method_name)(resource_name)
+
+    assert active_backend.calls == [
+        (method_name, (), {resource_parameter: resource_name})
+    ]  # nosec B101
 
 
 @pytest.mark.parametrize(

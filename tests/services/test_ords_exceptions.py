@@ -1,9 +1,12 @@
 import json
+import builtins
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel, ValidationError
 from oracle_vecdb import VecDBException
 from oracle_vecdb.services.ords.exceptions import ApiException
+import oracle_vecdb.vecdb_exception as vecdb_exception_module
 from oracle_vecdb.vecdb_exception import guidance_for_status
 
 
@@ -289,6 +292,107 @@ def test_exception_response_payload_supports_bytes_and_invalid_text():
     )  # nosec B101
 
 
+def test_exception_response_payload_supports_object_serializers():
+    class SerializedResponse:
+        def to_dict(self):
+            return {"message": "serialized"}
+
+    assert VecDBException._response_payload(  # nosec B101
+        None, SerializedResponse()
+    ) == {"message": "serialized"}
+
+
+def test_exception_redaction_handles_collections_bytes_and_serializers():
+    sensitive_key = "token"
+    sensitive_value = "hidden"
+    redacted_value = "<redacted>"
+
+    class SerializedValue:
+        def model_dump(self):
+            return {"safe": "value"}
+
+    class BrokenSerializer:
+        def model_dump(self):
+            raise TypeError("unsupported serializer")
+
+    assert VecDBException._redact_value(  # nosec B101
+        ["value", {sensitive_key: sensitive_value}]
+    ) == ["value", {sensitive_key: redacted_value}]
+    assert VecDBException._redact_value(("value", "other")) == (  # nosec B101
+        "value",
+        "other",
+    )
+    assert (
+        VecDBException._redact_value(  # nosec B101
+            memoryview(b"Authorization: Bearer token-value")
+        )
+        == "Authorization: Bearer <redacted>"
+    )
+    assert VecDBException._redact_value(SerializedValue()) == {  # nosec B101
+        "safe": "value"
+    }
+    VecDBException._redact_value(BrokenSerializer())
+
+
+def test_exception_formats_pydantic_validation_details():
+    class RequiredModel(BaseModel):
+        value: int
+
+    with pytest.raises(ValidationError) as raised:
+        RequiredModel.model_validate({})
+
+    error = VecDBException(status=422)
+    error.service_error = raised.value
+    error.service_error_class_name = "ValidationError"
+
+    rendered = error._format_service_error()
+    assert '"errors"' in rendered  # nosec B101
+    assert '"value"' in rendered  # nosec B101
+
+
+def test_exception_formatting_falls_back_for_invalid_validation_details():
+    class BrokenValidationError(Exception):
+        __module__ = "pydantic_core"
+
+        def errors(self):
+            raise TypeError("unsupported validation details")
+
+        def __str__(self):
+            return ""
+
+    error = VecDBException(status=422)
+    error.service_error = BrokenValidationError("fallback details")
+    error.service_error_class_name = "BrokenValidationError"
+
+    rendered = error._format_service_error()
+    assert "fallback details" in rendered  # nosec B101
+
+
+def test_exception_wrapper_falls_back_when_dynamic_subclassing_fails(
+    monkeypatch,
+):
+    real_type = builtins.type
+
+    def reject_dynamic_types(*args):
+        if len(args) == 3:
+            raise TypeError("dynamic type unavailable")
+        return real_type(*args)
+
+    monkeypatch.setattr(
+        vecdb_exception_module, "type", reject_dynamic_types, raising=False
+    )
+
+    class LocalError(Exception):
+        pass
+
+    error = VecDBException.from_service_error(
+        "query", {}, "ORDSService", LocalError("details")
+    )
+
+    assert isinstance(error, VecDBException)  # nosec B101
+    assert error.service_error_class_name == "LocalError"  # nosec B101
+
+
 def test_not_found_payload_without_code_is_stable():
     error = VecDBException.from_service_error(
         "drop_vector_table",
@@ -412,3 +516,85 @@ def test_wrapped_exception_exposes_standard_attributes_for_all_error_shapes():
     assert error.code == "LocalError"  # nosec B101
     assert error.exception_type == "LocalError"  # nosec B101
     assert error.original_exception_type is LocalError  # nosec B101
+
+
+def test_wrapped_exception_does_not_retain_credentials_or_sensitive_payload():
+    class TransportError(Exception):
+        status = 401
+        reason = "Authorization: Bearer token-value"
+        data = {
+            "database": "customer_db",
+            "access_token": "token-value",
+        }  # nosec B105
+        headers = {
+            "Authorization": "Bearer token-value",
+            "Cookie": "session=session-value",
+            "X-Request-ID": "request-id",
+        }
+
+    error = VecDBException.from_service_error(
+        "query",
+        {"kwargs": {"token": "token-value"}},  # nosec B105
+        "ORDSService",
+        TransportError(),
+    )
+    rendered = f"{error}\n{error!r}\n{error.format(include_trace=True)}"
+
+    for secret in ("token-value", "session-value"):
+        assert secret not in rendered  # nosec B101
+        assert secret not in repr(error.headers)  # nosec B101
+    assert error.original_exception_type is TransportError  # nosec B101
+    assert error.is_original_exception(TransportError)  # nosec B101
+    assert error.headers["X-Request-ID"] == "request-id"  # nosec B101
+
+
+def test_redaction_preserves_actionable_service_diagnostics():
+    error = VecDBException.from_service_error(
+        "describe_vector_table",
+        {"kwargs": {"table_name": "DOCS"}},
+        "ORDSService",
+        ServiceError(
+            status=400,
+            reason="Bad Request",
+            body=json.dumps(
+                {
+                    "code": "TABLE_INVALID",
+                    "message": "ORA-00942: table DOCS does not exist in database=customer_database",
+                    "type": "tag:oracle.com,2020:error/BadRequest",
+                    "instance": "ecid-123",
+                    "o:errorCode": "ORDS-25001",
+                    "action": "Verify the table name and schema",
+                    "requestId": "request-123",
+                    "connectionId": "connection-123",
+                    "queryId": "query-123",
+                    "database": "customer_database",
+                }
+            ),
+            data={
+                "database": "customer_database",
+                "table": "DOCS",
+                "request_id": "request-123",
+                "connection_id": "connection-123",
+                "query_id": "query-123",
+            },
+            headers={
+                "Content-Type": "application/problem+json",
+                "X-Request-ID": "request-123",
+                "Authorization": "Bearer token-value",
+            },
+        ),
+    )
+
+    rendered = error.format(include_trace=True)
+    assert "TABLE_INVALID" in rendered  # nosec B101
+    assert "ORA-00942" in rendered  # nosec B101
+    assert "DOCS" in rendered  # nosec B101
+    assert "ORDS-25001" in rendered  # nosec B101
+    assert "Verify the table name and schema" in rendered  # nosec B101
+    assert "ecid-123" in rendered  # nosec B101
+    assert "connection-123" in rendered  # nosec B101
+    assert "query-123" in rendered  # nosec B101
+    assert "customer_database" not in rendered  # nosec B101
+    assert "customer_database" not in repr(vars(error))  # nosec B101
+    assert "request-123" in repr(error.data)  # nosec B101
+    assert error.headers["X-Request-ID"] == "request-123"  # nosec B101

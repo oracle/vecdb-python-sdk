@@ -10,7 +10,92 @@ from __future__ import annotations
 import json
 import re
 import traceback
-from typing import Any, Dict, Optional
+from collections.abc import Mapping
+from typing import Any, Dict, Optional, cast
+
+_REDACTED = "<redacted>"
+
+# These names identify values that must not survive in an exception object.
+# Keep this list exact (after normalization) so useful fields such as
+# ``request_id``, ``connection_id``, and ``query_id`` remain available.
+_SENSITIVE_VALUE_KEYS = {
+    "authorization",
+    "proxy_authorization",
+    "cookie",
+    "set_cookie",
+    "x_api_key",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "client_secret",
+    "token",
+    "bearer_token",
+    "oauth_token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "credential",
+    "credentials",
+    "auth",
+    "authentication",
+    "header",
+    "headers",
+    "private_key",
+    "username",
+    "database",
+    "database_name",
+    "db",
+    "schema",
+    "schema_name",
+    "connection",
+    "connection_string",
+    "dsn",
+    "sql",
+    "query",
+    "query_by",
+    "filter",
+    "filters",
+    "document",
+    "documents",
+    "metadata",
+    "payload",
+    "vector",
+    "vectors",
+    "embedding",
+    "embeddings",
+    "url",
+}
+
+
+def _normalized_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+
+
+def _is_sensitive_key(value: Any) -> bool:
+    normalized = _normalized_key(value)
+    return normalized in _SENSITIVE_VALUE_KEYS or normalized.endswith(
+        ("_token", "_secret", "_password", "_credential", "_api_key")
+    )
+
+
+class _SanitizedServiceError(Exception):
+    """Safe, displayable copy of a transport exception."""
+
+    def __init__(self, class_name: str, **fields: Any) -> None:
+        self.class_name = class_name
+        for name, value in fields.items():
+            setattr(self, name, value)
+        super().__init__(self._safe_text(fields.get("reason")))
+
+    @staticmethod
+    def _safe_text(value: Any) -> str:
+        return value if isinstance(value, str) else str(value or "")
+
+    def __str__(self) -> str:
+        return self._safe_text(getattr(self, "reason", None))
 
 
 class VecDBException(Exception):
@@ -34,16 +119,18 @@ class VecDBException(Exception):
         stack_trace: Optional[str] = None,
     ) -> None:
         self.status = status
-        self.reason = reason
-        self.body = body
-        self.data = data
-        self.headers = headers
+        self.reason = self._redact_value(reason)
+        self.body = self._redact_value(body)
+        self.data = self._redact_value(data)
+        self.headers = self._redact_value(headers)
         self.operation = operation
-        self.arguments = arguments
+        self.arguments = self._sanitize_arguments(arguments)
         self.service_name = service_name
-        self.service_error = service_error
+        self.service_error = self._safe_service_error(service_error)
         self.service_error_class_name = service_error_class_name
-        self.original_exception = service_error
+        # Keep only a sanitized snapshot. Retaining the transport exception
+        # would also retain its raw response, headers, and args.
+        self.original_exception = self.service_error
         self.original_exception_type = (
             type(service_error) if service_error is not None else None
         )
@@ -122,6 +209,88 @@ class VecDBException(Exception):
             return cls(**values)
 
     @staticmethod
+    def _safe_service_error(
+        error: Optional[BaseException],
+    ) -> Optional[BaseException]:
+        if error is None or isinstance(error, _SanitizedServiceError):
+            return error
+        fields = {
+            name: VecDBException._redact_value(getattr(error, name, None))
+            for name in (
+                "status",
+                "reason",
+                "body",
+                "data",
+                "headers",
+                "error_code",
+                "error_message",
+                "error_type",
+                "error_instance",
+            )
+            if hasattr(error, name)
+        }
+        if "reason" not in fields:
+            fields["reason"] = VecDBException._redact_value(str(error))
+        snapshot = _SanitizedServiceError(type(error).__name__, **fields)
+        # Preserve the useful ``isinstance`` compatibility promised by the
+        # old public attribute without keeping the original object alive.
+        try:
+            safe_type = type(
+                f"Sanitized{type(error).__name__}",
+                (_SanitizedServiceError, type(error)),
+                {"__module__": __name__},
+            )
+            safe_error = cast(Any, safe_type).__new__(safe_type)
+            safe_error.__dict__.update(snapshot.__dict__)
+            Exception.__init__(safe_error, str(snapshot))
+            return safe_error
+        except TypeError:
+            if type(error).__module__.split(".", 1)[0] == "pydantic_core":
+                safe_type = type(
+                    "SanitizedValidationError",
+                    (_SanitizedServiceError, ValueError),
+                    {"__module__": __name__},
+                )
+                safe_error = cast(Any, safe_type).__new__(safe_type)
+                safe_error.__dict__.update(snapshot.__dict__)
+                Exception.__init__(safe_error, str(snapshot))
+                return safe_error
+            return snapshot
+
+    @staticmethod
+    def _redact_value(value: Any, key: str = "") -> Any:
+        """Recursively remove secrets from values retained for diagnostics."""
+        if _is_sensitive_key(key):
+            return _REDACTED
+        if isinstance(value, Mapping):
+            return {
+                item_key: VecDBException._redact_value(item, str(item_key))
+                for item_key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            sanitized = [VecDBException._redact_value(item) for item in value]
+            return tuple(sanitized) if isinstance(value, tuple) else sanitized
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            value = bytes(value).decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                sanitized = VecDBException._redact_value(parsed)
+                return json.dumps(sanitized)
+            return VecDBException._redact_diagnostic_text(value)
+        for serializer_name in ("model_dump", "to_dict"):
+            serializer = getattr(value, serializer_name, None)
+            if callable(serializer):
+                try:
+                    return VecDBException._redact_value(serializer(), key)
+                except (TypeError, ValueError):
+                    break
+        return value
+
+    @staticmethod
     def _sanitize_arguments(arguments: Any) -> Any:
         """Retain only safe resource identifiers in request diagnostics."""
         safe_keys = {
@@ -138,38 +307,34 @@ class VecDBException(Exception):
             "vector_index_params",
             "debug_flags",
         }
-        sensitive_keys = (
-            "auth",
-            "credential",
-            "document",
-            "filter",
-            "header",
-            "metadata",
-            "password",
-            "payload",
-            "secret",
-            "token",
-            "url",
-            "vector",
-        )
 
         def sanitize(
             value: Any, key: str = "", safe_context: bool = False
         ) -> Any:
-            key_lower = key.lower()
-            if any(term in key_lower for term in sensitive_keys):
-                return "<redacted>"
-            is_safe_key = safe_context or key_lower in safe_keys
+            key_normalized = _normalized_key(key)
+            if _is_sensitive_key(key):
+                return _REDACTED
+            is_safe_key = safe_context or key_normalized in {
+                _normalized_key(safe_key) for safe_key in safe_keys
+            }
             if isinstance(value, dict):
-                if not is_safe_key and key_lower not in {"", "args", "kwargs"}:
-                    return "<redacted>"
+                if not is_safe_key and key_normalized not in {
+                    "",
+                    "args",
+                    "kwargs",
+                }:
+                    return _REDACTED
                 return {
                     item_key: sanitize(item_value, str(item_key), is_safe_key)
                     for item_key, item_value in value.items()
                 }
             if isinstance(value, (list, tuple)):
-                if not is_safe_key and key_lower not in {"", "args", "kwargs"}:
-                    return "<redacted>"
+                if not is_safe_key and key_normalized not in {
+                    "",
+                    "args",
+                    "kwargs",
+                }:
+                    return _REDACTED
                 sanitized = [
                     sanitize(item, safe_context=is_safe_key) for item in value
                 ]
@@ -182,7 +347,7 @@ class VecDBException(Exception):
                 return "<redacted>"
             # Positional arguments have no reliable semantic key and may be
             # URLs, credentials, or payloads.
-            return value if is_safe_key else "<redacted>"
+            return value if is_safe_key else _REDACTED
 
         return sanitize(arguments)
 
@@ -476,13 +641,43 @@ class VecDBException(Exception):
             r"\1<redacted>",
             redacted,
         )
+        redacted = re.sub(
+            r"(?i)([\"']?(?:password|passwd|credential|username)[\"']?"
+            r"\s*[:=]\s*[\"']?)[^\s,;\"'}]+",
+            r"\1<redacted>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(input_value\s*=\s*)(?:'[^']*'|\"[^\"]*\"|[^,\]\n]+)",
+            r"\1<redacted>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([\"'](?:password|passwd|pwd|secret|token|credential|"
+            r"authorization|proxy[-_]authorization|cookie|set[-_]cookie|"
+            r"(?:x[-_])?api[-_]?key|username|database|database[-_]name|"
+            r"schema|schema[-_]name|connection|connection[-_]string|dsn|"
+            r"sql|query|query[-_]by|filter|filters|document|documents|"
+            r"metadata|payload|vector|vectors|embedding|embeddings|url)"
+            r"[\"']\s*:\s*)([\"'])[^\"']*\2",
+            r"\1\2<redacted>\2",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(\b(?:database|database[-_]name|schema|schema[-_]name|"
+            r"connection[-_]string|dsn)\s*[:=]\s*[\"']?)[^\s,;\"']+",
+            r"\1<redacted>",
+            redacted,
+        )
         return redacted
 
     def is_original_exception(
         self, exception_type: type[BaseException]
     ) -> bool:
         """Return whether the wrapped exception is an instance of ``exception_type``."""
-        return isinstance(self.original_exception, exception_type)
+        return self.original_exception_type is not None and issubclass(
+            self.original_exception_type, exception_type
+        )
 
     def __str__(self) -> str:
         return self.format()

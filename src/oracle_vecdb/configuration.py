@@ -62,6 +62,7 @@ HTTPS_BASE_URL_PATTERN = re.compile(
     r"(stable|\d+(?:\.\d+)*)/?$"
 )
 RUNTIME_BASE_PATH_PLACEHOLDER = "https://REPLACED_AT_RUNTIME"
+SUPPORTED_AUTHENTICATION_MODES = ("none", "basic", "bearer")
 
 ServerVariablesT = Dict[str, str]
 
@@ -368,6 +369,24 @@ class ConfigurationManualMixin:
             username = env_username
         if password is None and env_password:
             password = env_password
+
+        configured_auth_modes = []
+        if username is not None or password is not None:
+            if username is None or password is None:
+                raise ValueError(
+                    "Basic authentication requires both username and password."
+                )
+            configured_auth_modes.append("basic")
+        if access_token is not None:
+            configured_auth_modes.append("bearer")
+        if len(configured_auth_modes) > 1:
+            raise ValueError(
+                "Conflicting authentication settings: choose exactly one "
+                "authentication mode (username/password or access_token)."
+            )
+        self._authentication_mode = (
+            configured_auth_modes[0] if configured_auth_modes else "none"
+        )
 
         if self._rest_service_configured:
             self._validate_base_path(self._base_path)
@@ -712,6 +731,11 @@ class ConfigurationManualMixin:
                 self._build_auth_setting("oauth2", bearer),
             )
         return auth
+
+    @property
+    def authentication_mode(self) -> str:
+        """Return the single authentication mode selected for this client."""
+        return self._authentication_mode
 
     def to_debug_report(self) -> str:
         """Gets the essential information for debugging.

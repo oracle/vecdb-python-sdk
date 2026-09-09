@@ -498,8 +498,6 @@ def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
     cfg = Configuration(
         rest_url=VALID_HOST,
         access_token=access_token,
-        username="test-user",
-        password="test-password",  # nosec B106
     )
 
     with caplog.at_level("DEBUG"):
@@ -508,6 +506,23 @@ def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
 
     assert access_token not in caplog.text  # nosec B101
     assert "test-password" not in caplog.text  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {
+            "username": "user",
+            "password": "pass",
+            "access_token": "token",
+        },  # nosec B105
+        {"username": "user", "password": None},  # nosec B105
+        {"username": None, "password": "pass"},  # nosec B105
+    ],
+)
+def test_configuration_rejects_conflicting_or_partial_authentication(kwargs):
+    with pytest.raises(ValueError, match="authentication"):
+        Configuration(rest_url=VALID_HOST, **kwargs)
 
 
 def test_configuration_debug_constructor_sets_debug(monkeypatch):
