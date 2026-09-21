@@ -108,6 +108,70 @@ def test_service_error_uses_captured_original_class_name():
     assert '"message": "Other failure"' in str(error)  # nosec B101
 
 
+def test_service_error_can_render_the_full_ords_response(monkeypatch):
+    error = VecDBException.from_service_error(
+        "create_vector_table",
+        {"kwargs": {"name": "DOCS"}},
+        "ORDSService",
+        ServiceError(
+            status=500,
+            reason="Internal Server Error",
+            body=json.dumps(
+                {
+                    "code": "InternalServerError",
+                    "message": "Internal Server Error",
+                    "type": "tag:oracle.com,2020:error/InternalServerError",
+                    "instance": "tag:oracle.com,2020:ecid/test",
+                    "diagnosticTrace": "database diagnostic details",
+                    "stackTrace": "database stack details",
+                }
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(VecDBException, "include_full_ords_response", True)
+
+    rendered = str(error)
+
+    assert (
+        '"type": "tag:oracle.com,2020:error/InternalServerError"' in rendered
+    )  # nosec B101
+    assert (
+        '"diagnosticTrace": "database diagnostic details"' in rendered
+    )  # nosec B101
+    assert '"stackTrace": "database stack details"' in rendered  # nosec B101
+
+
+def test_full_ords_response_format_override_is_per_call(monkeypatch):
+    error = VecDBException.from_service_error(
+        "query",
+        {},
+        "ORDSService",
+        ServiceError(
+            status=500,
+            body=json.dumps(
+                {
+                    "code": "InternalServerError",
+                    "message": "Internal Server Error",
+                    "type": "tag:oracle.com,2020:error/InternalServerError",
+                    "instance": "tag:oracle.com,2020:ecid/test",
+                }
+            ),
+        ),
+    )
+    monkeypatch.setattr(VecDBException, "include_full_ords_response", True)
+
+    concise = error.format(include_full_ords_response=False)
+    full = error.format(include_full_ords_response=True)
+
+    assert (
+        '"type": "tag:oracle.com,2020:error/InternalServerError"' not in concise
+    )  # nosec B101
+    assert (
+        '"type": "tag:oracle.com,2020:error/InternalServerError"' in full
+    )  # nosec B101
+
+
 @pytest.mark.parametrize(
     "canary",
     [
@@ -257,6 +321,29 @@ def test_service_error_redacts_search_text_and_renders_safe_arguments():
     assert "ANNOTATION_SECRET" not in rendered  # nosec B101
 
 
+def test_service_error_redacts_composite_sensitive_keys_in_safe_arguments():
+    error = VecDBException.from_service_error(
+        "create_vector_table",
+        {
+            "kwargs": {
+                "annotations": {
+                    "token_value": "ANNOTATION_TOKEN_SECRET",  # nosec B105
+                    "api_secret_value": "ANNOTATION_API_SECRET",  # nosec B105
+                    "apiSecretValue": "ANNOTATION_CAMEL_SECRET",  # nosec B105
+                }
+            }
+        },
+        "ORDSService",
+        ServiceError(status=500, reason="Internal Server Error"),
+    )
+
+    rendered = str(error)
+    assert "ANNOTATION_TOKEN_SECRET" not in rendered  # nosec B101
+    assert "ANNOTATION_API_SECRET" not in rendered  # nosec B101
+    assert "ANNOTATION_CAMEL_SECRET" not in rendered  # nosec B101
+    assert error.arguments["kwargs"]["annotations"] == {}  # nosec B101
+
+
 def test_generic_vecdb_exception_can_be_reused_by_another_service():
     error = VecDBException(
         status=422,
@@ -332,6 +419,71 @@ def test_exception_redaction_handles_collections_bytes_and_serializers():
         "safe": "value"
     }
     VecDBException._redact_value(BrokenSerializer())
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "accessToken",
+        "access_token",
+        "access-token",
+        "ACCESS.TOKEN",
+        "JSONToken",
+    ],
+)
+def test_exception_redaction_normalizes_sensitive_key_variants(key):
+    value = "TOP_SECRET_VALUE"  # nosec B105
+
+    sanitized = VecDBException._redact_value({key: value})
+
+    assert sanitized == {key: "<redacted>"}  # nosec B101
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "secret"),
+    [
+        ('{"refreshToken":"REFRESH_SECRET"}', "REFRESH_SECRET"),
+        ("clientSecret=CLIENT_SECRET", "CLIENT_SECRET"),
+        ("privateKey: PRIVATE_KEY_SECRET", "PRIVATE_KEY_SECRET"),
+        ("databaseName=DATABASE_SECRET", "DATABASE_SECRET"),
+        ("connectionString: CONNECTION_SECRET", "CONNECTION_SECRET"),
+        ("authorizationToken=AUTHORIZATION_SECRET", "AUTHORIZATION_SECRET"),
+    ],
+)
+def test_exception_redaction_handles_json_and_raw_sensitive_key_forms(
+    diagnostic, secret
+):
+    sanitized = VecDBException._redact_value(diagnostic)
+
+    assert secret not in sanitized  # nosec B101
+    assert "<redacted>" in sanitized  # nosec B101
+
+
+def test_service_error_does_not_retain_unknown_nested_annotation_values():
+    error = VecDBException.from_service_error(
+        "create_vector_table",
+        {
+            "kwargs": {
+                "annotations": {
+                    "tier": "gold",
+                    "credentialValue": "ANNOTATION_SECRET",  # nosec B105
+                    "customExtension": {
+                        "nestedValue": "NESTED_ANNOTATION_SECRET"  # nosec B105
+                    },
+                }
+            }
+        },
+        "ORDSService",
+        ServiceError(status=500, reason="Internal Server Error"),
+    )
+
+    annotations = error.arguments["kwargs"]["annotations"]
+    rendered = f"{error}\n{error!r}\n{vars(error)!r}"
+
+    assert annotations == {"tier": "gold"}  # nosec B101
+    assert "ANNOTATION_SECRET" not in rendered  # nosec B101
+    assert "NESTED_ANNOTATION_SECRET" not in rendered  # nosec B101
+    assert "customExtension" not in rendered  # nosec B101
 
 
 def test_exception_formats_pydantic_validation_details():
@@ -424,6 +576,29 @@ def test_protocol_error_preserves_original_details():
 
     assert "ProtocolError: (None)" in str(error)  # nosec B101
     assert "connection reset by peer" in str(error)  # nosec B101
+
+
+def test_unstructured_error_redacts_marked_secrets_but_preserves_diagnostics():
+    class UnstructuredError(Exception):
+        def __str__(self):
+            return (
+                "backend diagnostic TOP_SECRET_VALUE; "
+                "request_id=req-123; connection reset by peer"
+            )
+
+    error = VecDBException.from_service_error(
+        "query", {}, "ORDSService", UnstructuredError()
+    )
+    rendered = (
+        f"{error}\n{error!r}\n{error.format(include_trace=True)}\n"
+        f"{vars(error)!r}"
+    )
+
+    assert "TOP_SECRET_VALUE" not in rendered  # nosec B101
+    assert "backend diagnostic" in rendered  # nosec B101
+    assert "request_id=req-123" in rendered  # nosec B101
+    assert "connection reset by peer" in rendered  # nosec B101
+    assert "UnstructuredError" in rendered  # nosec B101
 
 
 def test_nested_harness_context_does_not_replace_not_found_message():
@@ -598,3 +773,34 @@ def test_redaction_preserves_actionable_service_diagnostics():
     assert "customer_database" not in repr(vars(error))  # nosec B101
     assert "request-123" in repr(error.data)  # nosec B101
     assert error.headers["X-Request-ID"] == "request-123"  # nosec B101
+
+
+def test_redaction_preserves_ordinary_credential_error_diagnostics():
+    error = VecDBException.from_service_error(
+        "describe_vector_database",
+        {},
+        "ORDSService",
+        ServiceError(
+            status=574,
+            body=json.dumps(
+                {
+                    "code": "DatabaseCredentialError",
+                    "title": "Database Credential Error",
+                    "message": (
+                        "ORDS was unable to make a connection to the database. "
+                        "The username or password of the database user is invalid. "
+                        "ORA-01017: invalid username or not authorized; logon denied"
+                    ),
+                    "type": "tag:oracle.com,2020:error/DatabaseCredentialError",
+                    "instance": "ecid-credential-diagnostic",
+                }
+            ),
+        ),
+    )
+
+    rendered = error.format(include_full_ords_response=True)
+    assert '"title": "Database Credential Error"' in rendered  # nosec B101
+    assert "username or password of the database user" in rendered  # nosec B101
+    assert (
+        "ORA-01017: invalid username or not authorized" in rendered
+    )  # nosec B101
