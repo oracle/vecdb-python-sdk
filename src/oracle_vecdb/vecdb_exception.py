@@ -16,8 +16,9 @@ from typing import Any, Dict, Optional, cast
 _REDACTED = "<redacted>"
 
 # These names identify values that must not survive in an exception object.
-# Keep this list exact (after normalization) so useful fields such as
-# ``request_id``, ``connection_id``, and ``query_id`` remain available.
+# Keep exact identifiers such as ``request_id``, ``connection_id``, and
+# ``query_id`` available while also recognizing sensitive composite names such
+# as ``token_value`` inside otherwise safe nested request fields.
 _SENSITIVE_VALUE_KEYS = {
     "authorization",
     "proxy_authorization",
@@ -69,15 +70,58 @@ _SENSITIVE_VALUE_KEYS = {
     "url",
 }
 
+_SENSITIVE_KEY_FRAGMENTS = {
+    "api_key",
+    "apikey",
+    "auth",
+    "authorization",
+    "cookie",
+    "credential",
+    "credentials",
+    "header",
+    "headers",
+    "password",
+    "passwd",
+    "private_key",
+    "pwd",
+    "secret",
+    "token",
+}
+
+_SAFE_ANNOTATION_KEYS = {
+    "application",
+    "department",
+    "dimension",
+    "metric",
+    "owner",
+    "tier",
+    "updated",
+    "version",
+}
+
+_RAW_KEY_VALUE_PATTERN = re.compile(
+    r"(?P<key_prefix>[\"']?)(?P<key>[A-Za-z][A-Za-z0-9_.-]*)"
+    r"(?P<key_suffix>[\"']?)(?P<before_separator>\s*)"
+    r"(?P<separator>[:=])(?P<after_separator>\s*)"
+    r"(?:(?P<value_quote>[\"'])(?P<quoted_value>[^\"']*)"
+    r"(?P=value_quote)|(?P<bare_value>[^,\s}\]]+))"
+)
+
 
 def _normalized_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", str(value))
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def _is_sensitive_key(value: Any) -> bool:
     normalized = _normalized_key(value)
-    return normalized in _SENSITIVE_VALUE_KEYS or normalized.endswith(
-        ("_token", "_secret", "_password", "_credential", "_api_key")
+    return normalized in _SENSITIVE_VALUE_KEYS or any(
+        normalized == fragment
+        or normalized.startswith(f"{fragment}_")
+        or normalized.endswith(f"_{fragment}")
+        or f"_{fragment}_" in normalized
+        for fragment in _SENSITIVE_KEY_FRAGMENTS
     )
 
 
@@ -100,6 +144,10 @@ class _SanitizedServiceError(Exception):
 
 class VecDBException(Exception):
     """Base exception with normalized service error details."""
+
+    # Keep the public exception concise by default. Integration tests can
+    # enable this when the complete ORDSErrorResponse is needed for triage.
+    include_full_ords_response = False
 
     def __init__(
         self,
@@ -307,6 +355,13 @@ class VecDBException(Exception):
             "vector_index_params",
             "debug_flags",
         }
+        normalized_safe_keys = {
+            _normalized_key(safe_key) for safe_key in safe_keys
+        }
+        normalized_safe_annotation_keys = {
+            _normalized_key(annotation_key)
+            for annotation_key in _SAFE_ANNOTATION_KEYS
+        }
 
         def sanitize(
             value: Any, key: str = "", safe_context: bool = False
@@ -314,10 +369,24 @@ class VecDBException(Exception):
             key_normalized = _normalized_key(key)
             if _is_sensitive_key(key):
                 return _REDACTED
-            is_safe_key = safe_context or key_normalized in {
-                _normalized_key(safe_key) for safe_key in safe_keys
-            }
-            if isinstance(value, dict):
+            is_safe_key = safe_context or key_normalized in normalized_safe_keys
+            if key_normalized == "annotations":
+                # Do not propagate safe_context into arbitrary annotation extensions.
+                if value is None:
+                    return None
+                if not isinstance(value, Mapping):
+                    return _REDACTED
+                return {
+                    item_key: (
+                        VecDBException._redact_value(item_value, str(item_key))
+                        if isinstance(item_value, (str, int, float, bool))
+                        else _REDACTED
+                    )
+                    for item_key, item_value in value.items()
+                    if _normalized_key(item_key)
+                    in normalized_safe_annotation_keys
+                }
+            if isinstance(value, Mapping):
                 if not is_safe_key and key_normalized not in {
                     "",
                     "args",
@@ -451,10 +520,26 @@ class VecDBException(Exception):
     def vecdb_message(self) -> str:
         return f"VECDB-{getattr(self, 'error_code', 'HTTP-unknown')}: {getattr(self, 'error_message', 'Request failed')}"
 
-    def format(self, *, include_trace: bool = False) -> str:
-        """Format the error; include the traceback only when requested."""
+    def format(
+        self,
+        *,
+        include_trace: bool = False,
+        include_full_ords_response: Optional[bool] = None,
+    ) -> str:
+        """Format the error with optional service diagnostics.
+
+        ``include_full_ords_response`` overrides the class-level setting for
+        one formatting call. When omitted, the class-level setting controls
+        whether all fields returned by ORDS are rendered.
+        """
+        if include_full_ords_response is None:
+            include_full_ords_response = bool(
+                getattr(self, "include_full_ords_response", False)
+            )
         if self.service_error is not None:
-            original = self._format_service_error()
+            original = self._format_service_error(
+                include_full_ords_response=include_full_ords_response
+            )
             message = (
                 f"\nOperation - {self.operation}\n"
                 f"Request Data/Parameters - {self.arguments}\n"
@@ -482,7 +567,9 @@ class VecDBException(Exception):
             message += f"\nAction: {self.action}"
         return self._redact_diagnostic_text(message)
 
-    def _format_service_error(self) -> str:
+    def _format_service_error(
+        self, *, include_full_ords_response: bool = False
+    ) -> str:
         """Render the original ORDS error once, without generated duplication."""
         error = self.service_error
         name = self.service_error_class_name or type(error).__name__
@@ -520,6 +607,13 @@ class VecDBException(Exception):
                     # validation error exposes an incompatible errors() API.
                     pass
         payload = self._response_payload(body, data)
+        if include_full_ords_response and isinstance(payload, dict):
+            return (
+                message
+                + "\n"
+                + json.dumps(self._redact_value(payload), indent=4, default=str)
+            )
+
         response_message = (
             payload.get("message") if isinstance(payload, dict) else None
         )
@@ -606,6 +700,12 @@ class VecDBException(Exception):
 
         redacted = re.sub(r"(?i)(bearer\s+)[^\s\"',]+", r"\1<redacted>", value)
         redacted = re.sub(
+            r"(?i)((?:proxy-)?authorization\s*=\s*(?:basic|bearer)\s+)"
+            r"[^\s\"',]+",
+            r"\1<redacted>",
+            redacted,
+        )
+        redacted = re.sub(
             r"(?i)((?:proxy-)?authorization\s*:\s*(?:basic|bearer)\s+)"
             r"[^\s\"',]+",
             r"\1<redacted>",
@@ -629,7 +729,8 @@ class VecDBException(Exception):
         )
         redacted = re.sub(
             r"(?i)([?&](?:access[_-]?token|token|secret|signature|"
-            r"credential|password|x-amz-signature|x-amz-credential)=)"
+            r"credential|password|api[_-]?key|x-amz-signature|"
+            r"x-amz-credential)=)"
             r"[^&#\s\"']+",
             r"\1<redacted>",
             redacted,
@@ -642,7 +743,8 @@ class VecDBException(Exception):
             redacted,
         )
         redacted = re.sub(
-            r"(?i)([\"']?(?:password|passwd|credential|username)[\"']?"
+            r"(?i)([\"']?(?:password|passwd|pwd|secret|token|credential|"
+            r"username|auth|api[-_]?key)[\"']?"
             r"\s*[:=]\s*[\"']?)[^\s,;\"'}]+",
             r"\1<redacted>",
             redacted,
@@ -667,6 +769,40 @@ class VecDBException(Exception):
             r"(?i)(\b(?:database|database[-_]name|schema|schema[-_]name|"
             r"connection[-_]string|dsn)\s*[:=]\s*[\"']?)[^\s,;\"']+",
             r"\1<redacted>",
+            redacted,
+        )
+
+        def redact_raw_key_value(match: re.Match[str]) -> str:
+            key = match.group("key")
+            raw_value = (
+                match.group("quoted_value") or match.group("bare_value") or ""
+            )
+            if _normalized_key(key) in {
+                "authorization",
+                "proxy_authorization",
+            } and raw_value.lower() in {"basic", "bearer"}:
+                return match.group(0)
+            if not _is_sensitive_key(key):
+                return match.group(0)
+            value_quote = match.group("value_quote") or ""
+            return (
+                f"{match.group('key_prefix')}{key}{match.group('key_suffix')}"
+                f"{match.group('before_separator')}{match.group('separator')}"
+                f"{match.group('after_separator')}{value_quote}"
+                f"{_REDACTED}{value_quote}"
+            )
+
+        redacted = _RAW_KEY_VALUE_PATTERN.sub(redact_raw_key_value, redacted)
+        # Unstructured transport errors have no field name to guide the
+        # recursive redactor. Remove opaque values that explicitly identify
+        # themselves as secrets, while preserving ordinary diagnostics such
+        # as request IDs, ORA codes, and connection failures.
+        redacted = re.sub(
+            r"(?i)\b(?:(?:[a-z0-9.-]+[_-])?(?:secret|password|passwd|"
+            r"credential|api[-_]?key)[_-][a-z0-9.-]+|"
+            r"(?:[a-z0-9.-]+[_-])token(?:[_-][a-z0-9.-]+)?|"
+            r"token[_-][a-z0-9.-]+)\b",
+            "<redacted>",
             redacted,
         )
         return redacted
