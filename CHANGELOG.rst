@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
+1.0.4 - 2026-09-21
+------------------
+
+Added
+~~~~~
+
+- Exception diagnostic redaction of sensitive values in nested arguments.
+
+Changed
+~~~~~~~  
+
+- Removed the obsolete Sphinx documentation tree; the repository README and
+  published reference sources remain the documentation entry points.
+
 1.0.3 - 2026-09-07
 ------------------
 
