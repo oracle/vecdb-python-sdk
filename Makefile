@@ -13,15 +13,12 @@ SHELL := /bin/bash
 # ==============================================================================
 # 1. CONFIGURATION
 # ==============================================================================
-# Prefer the platform's explicit Python 3 executable.  Some environments do
-# not provide an unversioned `python` command.
-PYTHON = python
+# Prefer the repository virtual environment when available, then fall back to
+# the platform's Python 3 executable.  The variable remains overridable with
+# `make PYTHON=/path/to/python ...`.
+PYTHON ?= $(shell if test -x .venv310/bin/python; then printf '%s' .venv310/bin/python; elif test -x .venv/bin/python; then printf '%s' .venv/bin/python; elif command -v python3 >/dev/null 2>&1; then command -v python3; else printf '%s' python; fi)
 SOURCE_DIR = src
 TARGET_DIRS = $(SOURCE_DIR) tests examples
-DOCS_DIR = docs
-DOCS_BUILD_DIR = $(DOCS_DIR)/build
-DOC_ZIP_PREFIX = $(SDK_NAME)-api-ref
-
 # Optional flag to enable report generation. Use 'gmake <target> REPORT=1'
 REPORT ?= 
 INTEGRATION_TEST_WORKERS ?= 10
@@ -45,11 +42,11 @@ SECURITY_REPORT_DIR := $(REPORT_DIR)/security
 
 # Tools
 PYTEST = $(PYTHON) -m pytest
-BLACK = black
-FLAKE8 = flake8
-MYPY = mypy
-TOX = tox
-BANDIT = bandit
+BLACK = $(PYTHON) -m black
+FLAKE8 = $(PYTHON) -m flake8
+MYPY = $(PYTHON) -m mypy
+TOX = $(PYTHON) -m tox
+BANDIT = $(PYTHON) -m bandit
 
 # Build command
 BUILD = $(PYTHON) -m build
@@ -64,12 +61,7 @@ COVERAGE_XML_FLAG := $(if $(REPORT), --cov-report=xml:$(COVERAGE_REPORT_DIR)/cov
 COVERAGE_HTML_FLAG := $(if $(REPORT), --cov-report=html:$(COVERAGE_REPORT_DIR)/html,)
 BANDIT_REPORT_FLAG := $(if $(REPORT), -f json -o $(SECURITY_REPORT_DIR)/bandit_report.json,)
 
-SDK_NAME := $(shell $(PYTHON) -c "import pathlib, re, sys; text = pathlib.Path('pyproject.toml').read_text(); match = re.search(r'^name\\s*=\\s*\"([^\"\\n]+)\"', text, re.MULTILINE); print(match.group(1)) if match else sys.exit('name not found in pyproject.toml')")
-# Read the version source directly so `make install_dev` works in a freshly
-# created environment, before runtime dependencies such as pydantic exist.
-SDK_VERSION := $(shell $(PYTHON) -c "import ast, pathlib, sys; version = next((ast.literal_eval(line.split('=', 1)[1].strip()) for line in pathlib.Path('src/oracle_vecdb/version.py').read_text().splitlines() if line.lstrip().startswith('SDK_VERSION')), None); print(version) if version is not None else sys.exit('SDK_VERSION not found in src/oracle_vecdb/version.py')")
-
-.PHONY: all check distribute format format_check lint type_check test integration_test build install_dev clean help reports_dirs security_check generate_docs
+.PHONY: all check distribute format format_check lint type_check test integration_test build install_dev clean help reports_dirs security_check
 
 # =============================================================================
 # 2. CORE TARGETS
@@ -131,7 +123,7 @@ test: reports_dirs ## Run unit tests with coverage
 	@echo "   -> All tests passed."
 
 integration_test: reports_dirs ## Run live VecDB integration tests
-	@echo "Running VecDB integration tests (pytest-xdist)..."
+	@echo "Running VecDB integration tests..."
 	@if ! [[ "$(INTEGRATION_TEST_WORKERS)" =~ ^[0-9]+$$ ]] || [ "$(INTEGRATION_TEST_WORKERS)" -lt 1 ]; then \
 		echo "Error: INTEGRATION_TEST_WORKERS must be a positive integer."; \
 		exit 2; \
@@ -146,23 +138,32 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 	export VECDB_REQUIRE_INTEGRATION_TEST_ENV=true; \
 	export PYTHONPATH="$(abspath $(SOURCE_DIR))"; \
 	export VECDB_TEST_RUN_ID="$${VECDB_TEST_RUN_ID:-$$(date +%Y%m%d%H%M%S)}"; \
+	EXCLUDED_TEST_FILE="dev-tools/tests/integration/test_tkvcvecdb_sdk_sample_sanity.py"; \
 	TEST_FILES=(); \
 	if [ -n "$(INTEGRATION_TEST_PARALLEL_FILES)" ]; then \
 		for test_file in $(INTEGRATION_TEST_PARALLEL_FILES); do \
-			TEST_FILES+=("$$test_file"); \
+			if [ "$$test_file" != "$$EXCLUDED_TEST_FILE" ] && [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ]; then \
+				TEST_FILES+=("$$test_file"); \
+			fi; \
 		done; \
 	else \
-		while IFS= read -r test_file; do TEST_FILES+=("$$test_file"); done < <(find dev-tools/tests/integration -type f -name 'test_*.py' -print | sort); \
+		while IFS= read -r test_file; do TEST_FILES+=("$$test_file"); done < <(find dev-tools/tests/integration -type f -name 'test_*.py' ! -name 'test_tkvcvecdb_sdk_sample_sanity.py' -print | sort); \
 	fi; \
 	for test_file in $(INTEGRATION_TEST_SERIAL_FILES); do \
-		if [[ ! " $${TEST_FILES[*]} " =~ " $$test_file " ]]; then TEST_FILES+=("$$test_file"); fi; \
+		if [ "$$test_file" != "$$EXCLUDED_TEST_FILE" ] && [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ] && [[ ! " $${TEST_FILES[*]} " =~ " $$test_file " ]]; then TEST_FILES+=("$$test_file"); fi; \
 	done; \
 	REPORT_ARG=(); \
 	if [ -n "$(REPORT)" ]; then \
 		REPORT_ARG=(--junitxml "$(INTEGRATION_TEST_REPORT_SHARDS_DIR)/integration.xml"); \
 	fi; \
+	PYTEST_XDIST_ARGS=(); \
+	if [ "$(INTEGRATION_TEST_WORKERS)" -gt 1 ]; then \
+		PYTEST_XDIST_ARGS=(-n "$(INTEGRATION_TEST_WORKERS)" --dist=$(WORKER_SCHEDULE)); \
+	fi; \
 	TEST_STATUS=0; \
-	if [ "$${#TEST_FILES[@]}" -gt 0 ] && [ "$(DEBUG)" -gt 0 ]; then \
+	if [ "$${#TEST_FILES[@]}" -eq 0 ]; then \
+		echo "No integration test files selected."; \
+	elif [ "$(DEBUG)" -gt 0 ]; then \
 		MASTER_PID=$$$$ $(PYTEST) \
 			-rfE \
 			--tb=short \
@@ -172,8 +173,7 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 			--capture=tee-sys \
 			--color=yes \
 			--durations-min=1 \
-			-n "$(INTEGRATION_TEST_WORKERS)" \
-			--dist=$(WORKER_SCHEDULE) \
+			"$${PYTEST_XDIST_ARGS[@]}" \
 			"$${REPORT_ARG[@]}" \
 			"$${TEST_FILES[@]}"; \
 		TEST_STATUS=$$?; \
@@ -184,8 +184,7 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 			--durations=5 \
 			--color=yes \
 			--durations-min=1 \
-			-n "$(INTEGRATION_TEST_WORKERS)" \
-			--dist=$(WORKER_SCHEDULE) \
+			"$${PYTEST_XDIST_ARGS[@]}" \
 			"$${REPORT_ARG[@]}" \
 			"$${TEST_FILES[@]}"; \
 		TEST_STATUS=$$?; \
@@ -204,22 +203,6 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 	fi; \
 	exit $$TEST_STATUS
 	@echo "   -> Integration tests passed."
-
-generate_docs: ## Build SDK docs and package archive
-	@echo "Building SDK documentation (Sphinx HTML)..."
-	@if [ ! -f "$(DOCS_DIR)/source/conf.py" ]; then \
-		echo "Error: Sphinx configuration not found at $(DOCS_DIR)/source/conf.py"; \
-		exit 2; \
-	fi
-	@rm -rf $(DOCS_BUILD_DIR)
-	@$(MAKE) -C $(DOCS_DIR) html
-	@echo "Packaging HTML documentation archive..."
-	@if [ ! -d "$(DOCS_BUILD_DIR)/html" ]; then \
-		echo "Error: Expected HTML build directory not found: $(DOCS_BUILD_DIR)/html"; \
-		exit 1; \
-	fi
-	@cd "$(DOCS_BUILD_DIR)/html" && zip -qr "../$(DOC_ZIP_PREFIX)-$(SDK_VERSION).zip" .
-	@echo "   -> Documentation archived at $(DOCS_BUILD_DIR)/$(DOC_ZIP_PREFIX)-$(SDK_VERSION).zip"
 
 # ==============================================================================
 # 4. UTILITY TARGETS
@@ -243,7 +226,7 @@ install_dev: ## Install development dependencies
 
 clean: ## Remove build/test caches and reports
 	@echo "Cleaning up artifacts..."
-	@rm -rf .mypy_cache .pytest_cache .coverage htmlcov/ build dist __parfait__ $(REPORT_DIR) $(DOCS_BUILD_DIR)
+	@rm -rf .mypy_cache .pytest_cache .coverage htmlcov/ build dist __parfait__ $(REPORT_DIR)
 	@find . -name "__pycache__" -exec rm -rf {} +
 	@echo "   -> Cleanup complete."
 

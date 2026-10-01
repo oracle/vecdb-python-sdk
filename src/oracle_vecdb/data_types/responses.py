@@ -14,6 +14,7 @@ from typing import (
     Any,
     Dict,
     Iterable,
+    Iterator,
     List,
     Optional,
     Sequence,
@@ -195,6 +196,10 @@ class QueryResponse(_VecDBModel):
     def __len__(self) -> int:
         return len(self.items)
 
+    def __iter__(self) -> Iterator[QueryResultItem]:  # type: ignore[override]
+        """Iterate over the query result items."""
+        return iter(self.items)
+
     def __getitem__(self, index: int) -> QueryResultItem:
         return self.items[index]
 
@@ -341,6 +346,10 @@ class _PagedResponse(_VecDBModel):
     count: Optional[int] = None
     links: Optional[List[Any]] = None
 
+    def __iter__(self) -> Iterator[Any]:  # type: ignore[override]
+        """Iterate over the response items."""
+        return iter(self.items)
+
     @classmethod
     def from_internal(cls, response: Any) -> Self:
         values = {name: _value(response, name) for name in cls.model_fields}
@@ -365,6 +374,10 @@ class VectorCollectionResponse(_VecDBModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     count: Optional[int] = None
+
+    def __iter__(self) -> Iterator[Any]:  # type: ignore[override]
+        """Iterate over the response items."""
+        return iter(self.items)
 
     @classmethod
     def from_internal(cls, response: Any) -> Self:

@@ -106,6 +106,35 @@ _RAW_KEY_VALUE_PATTERN = re.compile(
     r"(?:(?P<value_quote>[\"'])(?P<quoted_value>[^\"']*)"
     r"(?P=value_quote)|(?P<bare_value>[^,\s}\]]+))"
 )
+_VECTOR_ID_NULL_GUIDANCE = (
+    "The vector ID is missing or exceeds the vector table's ID-column limit."
+)
+_VECTOR_ID_NULL_ACTION = (
+    "Verify that each vector ID complies with the vector table's documented "
+    "ID-column limit. Alternatively, create the table with "
+    'table_params={"auto_generate_id": True}.'
+)
+
+
+def _is_timeout_exception(error: Optional[BaseException]) -> bool:
+    """Return whether an exception represents a client-side timeout."""
+    if error is None:
+        return False
+    if isinstance(error, TimeoutError):
+        return True
+    if any("timeout" in cls.__name__.lower() for cls in type(error).__mro__):
+        return True
+
+    for attribute in ("reason", "original_error", "__cause__", "__context__"):
+        nested = getattr(error, attribute, None)
+        if isinstance(nested, BaseException) and nested is not error:
+            if _is_timeout_exception(nested):
+                return True
+
+    # urllib3's MaxRetryError renders the underlying ReadTimeoutError in its
+    # text, even when the wrapper does not retain it as a typed cause.
+    text = str(error).lower()
+    return "timed out" in text or "timeout=" in text
 
 
 def _normalized_key(value: Any) -> str:
@@ -478,7 +507,21 @@ class VecDBException(Exception):
                 original, "error_instance", None
             )
 
-        if not self.error_message:
+        timeout_error = _is_timeout_exception(original)
+        if timeout_error:
+            detail = self._redact_diagnostic_text(str(original)).strip()
+            operation = self.operation or "the request"
+            self.error_code = self.error_code or "TIMEOUT"
+            self.error_message = (
+                f"Request timed out while executing '{operation}'. "
+                "Increase Configuration.timeout and retry."
+            )
+            if detail and detail.lower() not in {
+                "timeout",
+                "timed out",
+            }:
+                self.error_message += f" Details: {detail}"
+        elif not self.error_message:
             self.error_message = str(
                 self.reason or self.body or original or "Request failed"
             ).strip()
@@ -489,8 +532,43 @@ class VecDBException(Exception):
 
         status = self.status if self.status is not None else "unknown"
         self.error_code = str(self.error_code or f"HTTP-{status}")
-        self.cause, self.action = guidance_for_status(self.status)
+        if timeout_error:
+            self.cause = (
+                "The configured HTTP request timeout elapsed before the "
+                "operation completed."
+            )
+            self.action = (
+                "Increase Configuration.timeout for slow operations, then "
+                "retry."
+            )
+        else:
+            self.cause, self.action = guidance_for_status(self.status)
+        self._has_operation_guidance = False
+        if self.operation == "upsert_vectors":
+            guidance = self.vector_id_null_guidance(
+                self.body,
+                self.data,
+                self.error_message,
+                self.reason,
+            )
+            if guidance:
+                self.cause, self.action = guidance
+                self._has_operation_guidance = True
         self._sync_exception_fields()
+
+    @staticmethod
+    def vector_id_null_guidance(*details: Any) -> Optional[tuple[str, str]]:
+        """Return guidance for an ID-column ORA-01400 failure."""
+        text = " ".join(str(value or "") for value in details)
+        if not re.search(r"ORA-01400", text, re.IGNORECASE):
+            return None
+        if not re.search(
+            r"cannot\s+insert\s+NULL\s+into\s*\([^)]*\bID\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return None
+        return _VECTOR_ID_NULL_GUIDANCE, _VECTOR_ID_NULL_ACTION
 
     def _sync_exception_fields(self) -> None:
         """Expose concrete ORDSErrorResponse field names for diagnostics."""
@@ -558,6 +636,8 @@ class VecDBException(Exception):
                     "\nService stack trace:\n"
                     f"{self._redact_diagnostic_text(self.stack_trace)}"
                 )
+            if getattr(self, "_has_operation_guidance", False):
+                message += f"\nCause: {self.cause}\nAction: {self.action}"
             return self._redact_diagnostic_text(message)
 
         message = f"({getattr(self, 'status', None)}) {self.vecdb_message}"
@@ -578,6 +658,8 @@ class VecDBException(Exception):
         data = getattr(error, "data", None)
         reason = getattr(error, "reason", None)
         message = f"{name}: ({status})"
+        if self.error_code == "TIMEOUT":
+            return f"{name}: client-side request timeout\nReason: {self.error_message}"
         if type(error).__module__.split(".", 1)[0] == "pydantic_core":
             errors = getattr(error, "errors", None)
             if callable(errors):
