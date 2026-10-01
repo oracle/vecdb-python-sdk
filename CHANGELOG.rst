@@ -22,8 +22,7 @@ Added
 Fixed
 ~~~~~
 
-- Clarified upsert errors caused by missing or oversized vector IDs and added
-  guidance for using automatically generated IDs.
+- Improved upsert error messages for missing or oversized vector IDs, including guidance on enabling automatic ID generation.
 - Removed REST endpoint values from being echoed in URL validation errors.
 
 1.0.4 - 2026-09-21
