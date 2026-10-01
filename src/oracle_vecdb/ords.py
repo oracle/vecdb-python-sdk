@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Union, cast
 
 from .data_types import (
@@ -57,13 +58,15 @@ from .types import UpsertVectorsRequestVectorsInner, VectorEmbedInputItem
 from .ords_response_handlers import ORDSResponseHandler
 from .vecdb_exception import VecDBException
 
+DEFAULT_MAX_RETRY_DELAY = 60.0
+
 
 class _CustomApiClient(ApiClient):
     """Handwritten adapter for generator-owned request plumbing.
 
     Generated API methods pass ``None`` when no per-request timeout is set.
-    Apply the SDK configuration default here so regeneration of ``ApiClient``
-    does not discard the public timeout contract.
+    Forward the user-configured timeout, when present, without imposing an
+    SDK default.
     """
 
     def call_api(
@@ -94,9 +97,27 @@ class ORDSSettings:
         self,
         max_retry_count_error_555: int = 3,
         max_retry_count_error_429: int = 3,
+        max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
     ) -> None:
         self.max_retry_count_error_555 = max(0, int(max_retry_count_error_555))
         self.max_retry_count_error_429 = max(0, int(max_retry_count_error_429))
+        if isinstance(max_retry_delay, bool) or not isinstance(
+            max_retry_delay, (int, float)
+        ):
+            raise ValueError(
+                "max_retry_delay must be a finite non-negative number"
+            )
+        try:
+            normalized_delay = float(max_retry_delay)
+        except OverflowError as error:
+            raise ValueError(
+                "max_retry_delay must be a finite non-negative number"
+            ) from error
+        if not math.isfinite(normalized_delay) or normalized_delay < 0:
+            raise ValueError(
+                "max_retry_delay must be a finite non-negative number"
+            )
+        self.max_retry_delay = normalized_delay
 
 
 _models = cast(Any, _generated_models)
@@ -114,9 +135,14 @@ _GENERATED_MODEL_NAMES = [
 class ORDSConfiguration(ORDSBaseConfiguration):
     """Configuration selected for ORDS/REST based VecDB access."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.ords_settings = ORDSSettings()
+        self.ords_settings = ORDSSettings(max_retry_delay=max_retry_delay)
 
         if not self.has_rest_url:
             raise ValueError(

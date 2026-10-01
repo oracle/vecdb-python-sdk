@@ -72,6 +72,16 @@ def _make_client(mocker):
     )
 
 
+def test_timeout_remains_configuration_only():
+    public_methods = inspect.getmembers(OracleVecDB, inspect.isfunction)
+
+    assert all(
+        "timeout" not in inspect.signature(method).parameters
+        for name, method in public_methods
+        if not name.startswith("_")
+    )  # nosec B101
+
+
 def test_convert_debug_flags_delegates_to_active_backend(mocker):
     client, active_backend, _ = _make_client(mocker)
     result = client._convert_debug_flags({"vector_index": "low"})

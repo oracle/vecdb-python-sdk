@@ -12,11 +12,15 @@ from oracle_vecdb.data_types import (
     DropVectorTableResponse,
     IndexDetailsResponse,
     IndexDescriptionResponse,
+    JobCollectionResponse,
     JobLogResponse,
+    ModelCollectionResponse,
     QueryResponse,
     QueryResultItem,
     RerankResponse,
     RerankResultItem,
+    VectorCollectionResponse,
+    VectorTableCollectionResponse,
     VectorTableResponse,
 )
 from oracle_vecdb.services.ords.models.query_vectors200_response import (
@@ -236,7 +240,9 @@ def test_query_result_item_normalizes_existing_and_object_values():
 
 
 def test_query_response_normalizes_items_attribute_sequence_and_existing():
-    existing = QueryResponse(items=[QueryResultItem(id="existing")])
+    existing = QueryResponse(
+        items=[QueryResultItem(id="first"), QueryResultItem(id="second")]
+    )
     object_response = AttributeItem(
         items=[AttributeItem(id="from-items", metadata={}, distance=0.2)]
     )
@@ -245,7 +251,12 @@ def test_query_response_normalizes_items_attribute_sequence_and_existing():
     ]
 
     assert QueryResponse.from_internal(existing) is existing  # nosec B101
-    assert len(existing) == 1  # nosec B101
+    assert len(existing) == 2  # nosec B101
+    assert list(existing) == existing.items  # nosec B101
+    assert [item.id for item in existing] == ["first", "second"]  # nosec B101
+    assert all(  # nosec B101
+        isinstance(item, QueryResultItem) for item in existing
+    )
     assert (
         QueryResponse.from_internal(object_response)[0].id == "from-items"
     )  # nosec B101
@@ -253,6 +264,25 @@ def test_query_response_normalizes_items_attribute_sequence_and_existing():
         QueryResponse.from_internal(sequence_response).items[0].id
         == "from-sequence"
     )
+
+
+@pytest.mark.parametrize(
+    "response_type",
+    [
+        VectorTableCollectionResponse,
+        VectorCollectionResponse,
+        ModelCollectionResponse,
+        JobCollectionResponse,
+    ],
+)
+def test_collection_responses_iterate_over_items(response_type):
+    response = response_type(items=[{"id": "first"}, {"id": "second"}])
+
+    assert list(response) == response.items  # nosec B101
+    assert [item["id"] for item in response] == [
+        "first",
+        "second",
+    ]  # nosec B101
 
 
 def test_query_response_from_generated_query_vectors_response():

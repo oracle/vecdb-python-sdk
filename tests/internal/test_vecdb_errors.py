@@ -104,16 +104,20 @@ def test_vecdb_error_print_oerr_without_cause_or_action_avoids_none(capsys):
 
 
 def test_invalid_host_format_error_derives_messages():
-    err = InvalidHostFormatError("http://bad")
+    url = "http://bad"
+    err = InvalidHostFormatError(url)
 
     assert "VECDB-002" in err.get_error()  # nosec B101
+    assert url not in err.get_error()  # nosec B101
     assert "Action:" in err.action  # nosec B101
 
 
 def test_insecure_connection_error_advises_https():
-    err = InsecureConnectionError("http://bad")
+    url = "http://bad"
+    err = InsecureConnectionError(url)
 
     assert "VECDB-001" in err.get_error()  # nosec B101
+    assert url not in err.get_error()  # nosec B101
     assert "HTTPS is required" in err.get_error()  # nosec B101
 
 
@@ -158,7 +162,11 @@ def test_resource_name_errors_include_codes_causes_and_actions(
 
 
 def test_job_and_default_setting_errors_construct_stable_messages():
-    ResourceNotFoundError("missing-resource")
-    InvalidLoadJobLogError("load-job", "RUNNING")
-    InvalidIndexJobLogError("index-job", "RUNNING")
+    resource_error = ResourceNotFoundError("caller-resource-value")
+    load_log_error = InvalidLoadJobLogError("caller-load-job", "RUNNING")
+    index_log_error = InvalidIndexJobLogError("caller-index-job", "RUNNING")
     DefaultSettingsParameterMismatchError("query", ["missing_parameter"])
+
+    assert "caller-resource-value" in resource_error.get_error()  # nosec B101
+    assert "caller-load-job" in load_log_error.get_error()  # nosec B101
+    assert "caller-index-job" in index_log_error.get_error()  # nosec B101

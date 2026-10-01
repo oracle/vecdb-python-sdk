@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import os
 import re
 from logging import FileHandler
@@ -65,6 +66,15 @@ RUNTIME_BASE_PATH_PLACEHOLDER = "https://REPLACED_AT_RUNTIME"
 SUPPORTED_AUTHENTICATION_MODES = ("none", "basic", "bearer")
 
 ServerVariablesT = Dict[str, str]
+
+
+def _is_finite_timeout(value: Union[int, float]) -> bool:
+    """Return whether a numeric timeout is finite without leaking overflow."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
 
 GenericAuthSetting = TypedDict(
     "GenericAuthSetting",
@@ -222,6 +232,12 @@ class ConfigurationManualMixin:
         :param retries: Number of retries for API requests.
         :param ca_cert_data: verify the peer using concatenated CA certificate data
           in PEM (str) or DER (bytes) format.
+        :param timeout: Optional request timeout in seconds. A number sets the
+          total timeout; a ``(connect, read)`` tuple sets separate connection
+          and read timeouts. If omitted, no SDK timeout is configured and the
+          underlying urllib3 behavior is preserved.
+          The setting applies to SDK HTTP requests, not asynchronous job
+          completion or polling loops. It can be changed after construction.
 
         :Example:
 
@@ -278,6 +294,38 @@ class ConfigurationManualMixin:
     @staticmethod
     def _raise_missing_service_configuration() -> None:
         raise ValueError("Please provide an ORDS endpoint using 'rest_url'.")
+
+    @staticmethod
+    def _validate_timeout(
+        value: Optional[Union[float, tuple[float, float]]],
+    ) -> Optional[Union[float, tuple[float, float]]]:
+        """Validate and return a public HTTP request timeout value."""
+        if value is None:
+            return None
+
+        if isinstance(value, tuple):
+            if len(value) != 2 or any(
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not _is_finite_timeout(item)
+                or item <= 0
+                for item in value
+            ):
+                raise ValueError(
+                    "timeout tuple values must be positive numbers"
+                )
+            return value
+
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not _is_finite_timeout(value)
+            or value <= 0
+        ):
+            raise ValueError(
+                "timeout must be a positive number or (connect, read) tuple"
+            )
+        return value
 
     @staticmethod
     def _build_auth_setting(
@@ -393,25 +441,7 @@ class ConfigurationManualMixin:
         """Default Base url
         """
         if timeout is not None:
-            if isinstance(timeout, tuple):
-                if len(timeout) != 2 or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or value <= 0
-                    for value in timeout
-                ):
-                    raise ValueError(
-                        "timeout tuple values must be positive numbers"
-                    )
-            elif (
-                isinstance(timeout, bool)
-                or not isinstance(timeout, (int, float))
-                or timeout <= 0
-            ):
-                raise ValueError(
-                    "timeout must be a positive number or (connect, read) tuple"
-                )
-        self.timeout = timeout
+            self.timeout = timeout
         self.server_index = (
             0
             if server_index is None and resolved_base_path is None
@@ -551,6 +581,17 @@ class ConfigurationManualMixin:
         result.logger_file = self.logger_file
         result.debug = self.debug
         return result
+
+    @property
+    def timeout(self) -> Optional[Union[float, tuple[float, float]]]:
+        """Optional user-configured timeout for SDK HTTP requests."""
+        return getattr(self, "_timeout", None)
+
+    @timeout.setter
+    def timeout(
+        self, value: Optional[Union[float, tuple[float, float]]]
+    ) -> None:
+        self._timeout = self._validate_timeout(value)
 
     def __setattr__(self, name: str, value: Any) -> None:
         object.__setattr__(self, name, value)
