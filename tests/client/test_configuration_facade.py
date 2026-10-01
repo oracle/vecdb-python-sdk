@@ -5,6 +5,7 @@
 
 import copy
 import http.client
+import inspect
 import os
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import oracle_vecdb.services.ords.configuration as generated_configuration
 
 from oracle_vecdb.configuration import (
     Configuration,
+    ConfigurationManualMixin,
     ORDSBaseConfiguration,
     ORDSConfiguration,
     apply_configuration_extensions,
@@ -115,10 +117,79 @@ def test_configuration_rejects_positional_endpoint(monkeypatch):
         Configuration(VALID_HOST)
 
 
-@pytest.mark.parametrize("timeout", [True, 0, (1, False), (1, -1)])
+@pytest.mark.parametrize(
+    "timeout",
+    [
+        True,
+        0,
+        float("inf"),
+        float("nan"),
+        (1, False),
+        (1, -1),
+        (1, float("inf")),
+        10**400,
+        (10**400, 1),
+        (1, 10**400),
+    ],
+)
 def test_configuration_rejects_invalid_timeout(timeout):
     with pytest.raises(ValueError, match="timeout"):
         Configuration(rest_url=VALID_HOST, timeout=timeout)
+
+
+def test_configuration_timeout_can_be_overwritten_with_validation():
+    cfg = Configuration(rest_url=VALID_HOST, timeout=12.5)
+
+    cfg.timeout = (5.0, 60.0)
+
+    assert cfg.timeout == (5.0, 60.0)  # nosec B101
+
+    with pytest.raises(ValueError, match="timeout"):
+        cfg.timeout = (5.0, 0)
+
+    assert cfg.timeout == (5.0, 60.0)  # nosec B101
+
+
+def test_configuration_timeout_is_not_set_by_default():
+    cfg = Configuration(rest_url=VALID_HOST)
+
+    assert cfg.timeout is None  # nosec B101
+    assert not hasattr(cfg, "_timeout")  # nosec B101
+
+    cfg.timeout = 12.5
+
+    assert cfg.timeout == 12.5  # nosec B101
+
+
+def test_configuration_timeout_preserves_positional_slot():
+    parameter = inspect.signature(ConfigurationManualMixin.__init__).parameters[
+        "timeout"
+    ]
+
+    assert (
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )  # nosec B101
+
+    positional_args = [None] * 13 + [12.5]
+    cfg = Configuration(*positional_args, rest_url=VALID_HOST)
+
+    assert cfg.timeout == 12.5  # nosec B101
+    assert cfg.verify_ssl is True  # nosec B101
+
+
+def test_configuration_exposes_max_retry_delay():
+    cfg = Configuration(rest_url=VALID_HOST, max_retry_delay=5.0)
+
+    assert cfg.ords_settings.max_retry_delay == 5.0  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "max_retry_delay",
+    [True, -1, float("inf"), float("nan")],
+)
+def test_configuration_rejects_invalid_max_retry_delay(max_retry_delay):
+    with pytest.raises(ValueError, match="max_retry_delay"):
+        Configuration(rest_url=VALID_HOST, max_retry_delay=max_retry_delay)
 
 
 def test_generated_configuration_without_rest_url_reports_false():
@@ -472,7 +543,7 @@ def test_generated_configuration_debug_does_not_toggle_global_http_debug_or_log_
 ):
     original = http.client.HTTPConnection.debuglevel
     username = "test-user"
-    password = "test-password"  # nosec B105
+    password = "test-password"  # nosec
     try:
         http.client.HTTPConnection.debuglevel = 7
         cfg = generated_configuration.Configuration(
@@ -494,7 +565,7 @@ def test_generated_configuration_debug_does_not_toggle_global_http_debug_or_log_
 
 def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
     _reset_env_vars(monkeypatch)
-    access_token = "Bearer test-token-that-must-not-be-logged"  # nosec B105
+    access_token = "Bearer test-token-that-must-not-be-logged"  # nosec
     cfg = Configuration(
         rest_url=VALID_HOST,
         access_token=access_token,
@@ -515,9 +586,9 @@ def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
             "username": "user",
             "password": "pass",
             "access_token": "token",
-        },  # nosec B105
-        {"username": "user", "password": None},  # nosec B105
-        {"username": None, "password": "pass"},  # nosec B105
+        },  # nosec
+        {"username": "user", "password": None},  # nosec
+        {"username": None, "password": "pass"},  # nosec
     ],
 )
 def test_configuration_rejects_conflicting_or_partial_authentication(kwargs):

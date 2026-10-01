@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import pytest
+import urllib3
 import oracle_vecdb.ords as ords_module
+import oracle_vecdb.ords_response_handlers as response_handlers_module
 from pydantic import ValidationError
 from oracle_vecdb.configuration import Configuration
 from oracle_vecdb.ords import ORDSService, create_ords_service
@@ -21,9 +23,16 @@ VALID_HOST = "https://example.com/ords/foo/_/db-api/stable/vecdb/"
 class TransportError(Exception):
     """Transport-shaped error used to test the generic retry contract."""
 
-    def __init__(self, *, status: int, reason: str) -> None:
+    def __init__(
+        self,
+        *,
+        status: int,
+        reason: str,
+        headers: Dict[str, str] | None = None,
+    ) -> None:
         self.status = status
         self.reason = reason
+        self.headers = headers or {}
         super().__init__(reason)
 
 
@@ -49,6 +58,113 @@ def test_sdk_api_client_preserves_per_request_timeout(mocker):
     assert request.call_args.kwargs["_request_timeout"] == (
         1.0,
         2.0,
+    )  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "configured_timeout, expected_connect, expected_read, expected_total",
+    [
+        (None, None, None, None),
+        (12.5, None, None, 12.5),
+        ((1.0, 2.0), 1.0, 2.0, None),
+    ],
+)
+def test_sdk_client_applies_configured_timeout_to_transport(
+    mocker,
+    configured_timeout,
+    expected_connect,
+    expected_read,
+    expected_total,
+):
+    config = Configuration(rest_url=VALID_HOST, timeout=configured_timeout)
+    client = ords_module._CustomApiClient(config)
+    response = mocker.Mock(status=200, reason="OK", data=b"{}")
+    request = mocker.patch.object(
+        client.rest_client.pool_manager, "request", return_value=response
+    )
+
+    client.call_api("GET", "/health")
+
+    timeout = request.call_args.kwargs["timeout"]
+    if configured_timeout is None:
+        assert timeout is None  # nosec B101
+    else:
+        assert isinstance(timeout, urllib3.Timeout)  # nosec B101
+        assert timeout.total == expected_total  # nosec B101
+        if expected_total is None:
+            assert timeout.connect_timeout == expected_connect  # nosec B101
+            assert timeout.read_timeout == expected_read  # nosec B101
+
+
+def test_sdk_client_uses_updated_configuration_timeout(mocker):
+    config = Configuration(rest_url=VALID_HOST, timeout=12.5)
+    client = ords_module._CustomApiClient(config)
+    response = mocker.Mock(status=200, reason="OK", data=b"{}")
+    request = mocker.patch.object(
+        client.rest_client.pool_manager, "request", return_value=response
+    )
+
+    client.call_api("GET", "/health")
+    config.timeout = (1.0, 2.0)
+    client.call_api("GET", "/health")
+
+    first_timeout = request.call_args_list[0].kwargs["timeout"]
+    second_timeout = request.call_args_list[1].kwargs["timeout"]
+    assert first_timeout.total == 12.5  # nosec B101
+    assert second_timeout.connect_timeout == 1.0  # nosec B101
+    assert second_timeout.read_timeout == 2.0  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "method_name, api_name",
+    [("list_models", "model_api"), ("list_vector_tables", "table_api")],
+)
+def test_collection_list_operations_apply_configured_timeout(
+    mocker, method_name, api_name
+):
+    config = Configuration(rest_url=VALID_HOST, timeout=(0.25, 1.5))
+    service = ORDSService(config)
+    response = mocker.Mock(
+        status=200,
+        reason="OK",
+        data=b'{"items": []}',
+        headers={"content-type": "application/json"},
+    )
+    request = mocker.patch.object(
+        service.api_client.rest_client.pool_manager,
+        "request",
+        return_value=response,
+    )
+
+    getattr(getattr(service, api_name), method_name)()
+
+    timeout = request.call_args.kwargs["timeout"]
+    assert isinstance(timeout, urllib3.Timeout)  # nosec B101
+    assert timeout.connect_timeout == 0.25  # nosec B101
+    assert timeout.read_timeout == 1.5  # nosec B101
+
+
+@pytest.mark.parametrize("method_name", ["list_models", "list_vector_tables"])
+def test_collection_list_timeout_is_normalized_with_operation(
+    mocker, method_name
+):
+    config = Configuration(rest_url=VALID_HOST, timeout=0.01)
+    service = ORDSService(config)
+    request = mocker.patch.object(
+        service.api_client.rest_client.pool_manager,
+        "request",
+        side_effect=TimeoutError("simulated request timeout"),
+    )
+
+    with pytest.raises(VecDBException) as exc_info:
+        getattr(service, method_name)()
+
+    error = exc_info.value
+    assert request.call_count == 1  # nosec B101
+    assert error.operation == method_name  # nosec B101
+    assert error.error_code == "TIMEOUT"  # nosec B101
+    assert "Increase Configuration.timeout and retry." in str(
+        error
     )  # nosec B101
 
 
@@ -149,7 +265,7 @@ def test_response_handler_redispatches_non_retryable_error():
             self.calls = 0
 
         @ORDSResponseHandler
-        def execute(self):
+        def list_vector_tables(self):
             self.calls += 1
             if self.calls == 1:
                 raise TransportError(status=429, reason="retry")
@@ -157,7 +273,7 @@ def test_response_handler_redispatches_non_retryable_error():
 
     endpoint = Endpoint()
     with pytest.raises(TransportError, match="bad request"):
-        endpoint.execute()
+        endpoint.list_vector_tables()
     assert endpoint.calls == 2  # nosec B101
 
 
@@ -374,6 +490,59 @@ def test_ords_service_retries_429_in_public_facade():
         service.list_vector_tables(), ords_module.VectorTableCollectionResponse
     )  # nosec B101
     assert calls["count"] == 3  # nosec B101
+
+
+def test_ords_service_does_not_retry_mutating_operation():
+    service = _make_service()
+    service.config = Configuration(rest_url=VALID_HOST)
+    service.config.ords_settings.max_retry_count_error_555 = 3
+    calls = {"count": 0}
+
+    def create_table(_request):
+        calls["count"] += 1
+        raise TransportError(status=555, reason="ORDS-25001")
+
+    service.table_api.create_vector_table = create_table
+
+    with pytest.raises(VecDBException):
+        service.create_vector_table(name="docs")
+
+    assert calls["count"] == 1  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    ["86400", "Wed, 01 Jan 2099 00:00:00 GMT"],
+)
+def test_ords_service_caps_server_retry_after_delay(mocker, retry_after):
+    service = _make_service()
+    service.config = Configuration(
+        rest_url=VALID_HOST,
+        max_retry_delay=2.5,
+    )
+    service.config.ords_settings.max_retry_count_error_429 = 1
+    calls = {"count": 0}
+    delays = []
+
+    def throttled():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise TransportError(
+                status=429,
+                reason="Too Many Requests",
+                headers={"Retry-After": retry_after},
+            )
+        return "tables"
+
+    service.table_api.list_vector_tables = throttled
+    mocker.patch.object(
+        response_handlers_module.time, "sleep", side_effect=delays.append
+    )
+
+    assert isinstance(
+        service.list_vector_tables(), ords_module.VectorTableCollectionResponse
+    )  # nosec B101
+    assert delays == [2.5]  # nosec B101
 
 
 def test_ords_service_honors_429_max_retries():

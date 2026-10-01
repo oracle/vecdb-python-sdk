@@ -4,12 +4,12 @@ from typing import Mapping
 
 ERROR_MESSAGES: Mapping[str, Mapping[str, str]] = {
     "VECDB-001": {
-        "message": "Insecure REST URL: {rest_url}. HTTPS is required.",
+        "message": "Insecure REST URL. HTTPS is required.",
         "cause": "Plain-text HTTP can expose authentication details in transit.",
         "action": "Set rest_url to an endpoint that starts with 'https://'.",
     },
     "VECDB-002": {
-        "message": "Invalid REST URL format: {rest_url}.",
+        "message": "Invalid REST URL format.",
         "cause": "The REST URL does not match the required VecDB URL structure.",
         "action": "Use https://<host>:<port>/ords/<schema>/_/db-api/(stable|<version>)/vecdb/.",
     },

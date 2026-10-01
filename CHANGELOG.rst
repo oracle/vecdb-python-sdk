@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
+1.0.5 - 2026-10-01
+------------------
+
+Added
+~~~~~
+
+- Added configurable HTTP request timeouts through ``Configuration.timeout``,
+  supporting both total timeouts and separate connect/read timeouts.
+- Added direct iteration support for query, paged, and vector collection
+  responses.
+- Added configurable retry-delay limits for transient HTTP 429 responses,
+  including support for server-provided ``Retry-After`` values.
+
+Fixed
+~~~~~
+
+- Improved upsert error messages for missing or oversized vector IDs, including guidance on enabling automatic ID generation.
+- Removed REST endpoint values from being echoed in URL validation errors.
+
 1.0.4 - 2026-09-21
 ------------------
 

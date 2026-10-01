@@ -120,6 +120,7 @@ def validate_common_spec_arguments(
     @wraps(function)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         arguments = signature.bind(*args, **kwargs)
+        public_error: VecDBException
         try:
             validate_operation_arguments(function.__name__, arguments.arguments)
         except (ValidationError, ValueError, TypeError) as validation_error:
@@ -129,13 +130,18 @@ def validate_common_spec_arguments(
             )
             # Do not attach the full nested request: it may contain credentials,
             # signed URLs, query text, or other sensitive application data.
-            raise VecDBException.from_service_error(
+            public_error = VecDBException.from_service_error(
                 operation=function.__name__,
                 arguments={"kwargs": {"request": "<redacted>"}},
                 service_name="validation",
                 error=error,
-            ) from validation_error
-        return function(*arguments.args, **arguments.kwargs)
+            )
+        else:
+            return function(*arguments.args, **arguments.kwargs)
+
+        # Raise outside the except block so Python does not retain the raw
+        # validation exception as the public exception context.
+        raise public_error from None
 
     return wrapper
 

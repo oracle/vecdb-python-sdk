@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel, ValidationError
+from urllib3.exceptions import MaxRetryError, ReadTimeoutError
 from oracle_vecdb import VecDBException
 from oracle_vecdb.services.ords.exceptions import ApiException
 import oracle_vecdb.vecdb_exception as vecdb_exception_module
@@ -301,7 +302,7 @@ def test_service_error_redacts_search_text_and_renders_safe_arguments():
                 "comment": "Safe table description",
                 "annotations": {
                     "tier": "gold",
-                    "token": "ANNOTATION_SECRET",  # nosec B105
+                    "token": "ANNOTATION_SECRET",  # nosec
                 },
                 "table_params": {"auto_generate_id": True},
             },
@@ -327,9 +328,9 @@ def test_service_error_redacts_composite_sensitive_keys_in_safe_arguments():
         {
             "kwargs": {
                 "annotations": {
-                    "token_value": "ANNOTATION_TOKEN_SECRET",  # nosec B105
-                    "api_secret_value": "ANNOTATION_API_SECRET",  # nosec B105
-                    "apiSecretValue": "ANNOTATION_CAMEL_SECRET",  # nosec B105
+                    "token_value": "ANNOTATION_TOKEN_SECRET",  # nosec
+                    "api_secret_value": "ANNOTATION_API_SECRET",  # nosec
+                    "apiSecretValue": "ANNOTATION_CAMEL_SECRET",  # nosec
                 }
             }
         },
@@ -432,7 +433,7 @@ def test_exception_redaction_handles_collections_bytes_and_serializers():
     ],
 )
 def test_exception_redaction_normalizes_sensitive_key_variants(key):
-    value = "TOP_SECRET_VALUE"  # nosec B105
+    value = "TOP_SECRET_VALUE"  # nosec
 
     sanitized = VecDBException._redact_value({key: value})
 
@@ -466,9 +467,9 @@ def test_service_error_does_not_retain_unknown_nested_annotation_values():
             "kwargs": {
                 "annotations": {
                     "tier": "gold",
-                    "credentialValue": "ANNOTATION_SECRET",  # nosec B105
+                    "credentialValue": "ANNOTATION_SECRET",  # nosec
                     "customExtension": {
-                        "nestedValue": "NESTED_ANNOTATION_SECRET"  # nosec B105
+                        "nestedValue": "NESTED_ANNOTATION_SECRET"  # nosec
                     },
                 }
             }
@@ -563,6 +564,28 @@ def test_not_found_payload_without_code_is_stable():
     )  # nosec B101
 
 
+def test_upsert_vector_id_null_error_adds_actionable_guidance():
+    error = VecDBException.from_service_error(
+        "upsert_vectors",
+        {"kwargs": {"table_name": "DOCS", "vectors": "<redacted>"}},
+        "ORDSService",
+        ServiceError(
+            status=400,
+            reason="Bad Request",
+            body=(
+                '{"code":"BadRequest","message":"ORA-01400: cannot '
+                'insert NULL into (\\"SYS\\".\\"DOCS\\".\\"ID\\")"}'
+            ),
+        ),
+    )
+
+    rendered = str(error)
+
+    assert "ORA-01400: cannot insert NULL" in rendered  # nosec B101
+    assert "vector ID is missing or exceeds" in rendered  # nosec B101
+    assert 'table_params={"auto_generate_id": True}' in rendered  # nosec B101
+
+
 def test_protocol_error_preserves_original_details():
     class ProtocolError(Exception):
         pass
@@ -576,6 +599,43 @@ def test_protocol_error_preserves_original_details():
 
     assert "ProtocolError: (None)" in str(error)  # nosec B101
     assert "connection reset by peer" in str(error)  # nosec B101
+
+
+def test_timeout_error_has_operation_and_actionable_user_message():
+    error = VecDBException.from_service_error(
+        "list_models",
+        {},
+        "ORDSService",
+        TimeoutError("simulated read timeout"),
+    )
+
+    rendered = str(error)
+
+    assert error.error_code == "TIMEOUT"  # nosec B101
+    assert error.original_exception_type_name == "TimeoutError"  # nosec B101
+    assert "list_models" in rendered  # nosec B101
+    assert "client-side request timeout" in rendered  # nosec B101
+    assert "Increase Configuration.timeout and retry." in rendered  # nosec B101
+    assert "simulated read timeout" in rendered  # nosec B101
+
+
+def test_wrapped_urllib3_timeout_has_timeout_code_and_message():
+    transport_error = MaxRetryError(
+        "pool",
+        "https://example.invalid/",
+        reason=ReadTimeoutError(
+            "pool", "https://example.invalid/", "Read timed out"
+        ),
+    )
+    error = VecDBException.from_service_error(
+        "list_vector_tables", {}, "ORDSService", transport_error
+    )
+
+    rendered = str(error)
+
+    assert error.error_code == "TIMEOUT"  # nosec B101
+    assert "list_vector_tables" in rendered  # nosec B101
+    assert "Increase Configuration.timeout and retry." in rendered  # nosec B101
 
 
 def test_unstructured_error_redacts_marked_secrets_but_preserves_diagnostics():
@@ -700,7 +760,7 @@ def test_wrapped_exception_does_not_retain_credentials_or_sensitive_payload():
         data = {
             "database": "customer_db",
             "access_token": "token-value",
-        }  # nosec B105
+        }  # nosec
         headers = {
             "Authorization": "Bearer token-value",
             "Cookie": "session=session-value",
@@ -709,7 +769,7 @@ def test_wrapped_exception_does_not_retain_credentials_or_sensitive_payload():
 
     error = VecDBException.from_service_error(
         "query",
-        {"kwargs": {"token": "token-value"}},  # nosec B105
+        {"kwargs": {"token": "token-value"}},  # nosec
         "ORDSService",
         TransportError(),
     )
