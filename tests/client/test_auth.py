@@ -125,6 +125,7 @@ def test_get_vecdb_oauth_token_raises_safe_transport_error(mocker):
         raised.value
     )  # nosec B101
     assert "secret detail" not in str(raised.value)  # nosec B101
+    assert raised.value.__context__ is None  # nosec B101
 
 
 def test_get_vecdb_oauth_token_rejects_invalid_json(mocker):

@@ -87,6 +87,7 @@ def get_vecdb_oauth_token(
 
     pool = None
     response = None
+    transport_failed = False
 
     try:
         pool = _build_pool(
@@ -129,15 +130,18 @@ def get_vecdb_oauth_token(
     except OAuthTokenError:
         raise
     except (urllib3.exceptions.HTTPError, OSError, ValueError):
-        raise OAuthTokenError(
-            safe_endpoint,
-            "transport or request configuration failure",
-        ) from None
+        transport_failed = True
     finally:
         if response is not None:
             response.release_conn()
         if pool is not None:
             pool.clear()
+
+    if transport_failed:
+        raise OAuthTokenError(
+            safe_endpoint,
+            "transport or request configuration failure",
+        ) from None
 
 
 def _validate_credentials(
