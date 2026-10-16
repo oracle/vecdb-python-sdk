@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+import re
 from typing import Any, Dict, List, Optional, Union, cast
 
 from .data_types import (
@@ -56,6 +58,7 @@ from .configuration import ORDSBaseConfiguration
 from .services.ords import models as _generated_models
 from .types import UpsertVectorsRequestVectorsInner, VectorEmbedInputItem
 from .ords_response_handlers import ORDSResponseHandler
+from .parameter_validation import validate_positive_top_k
 from .vecdb_exception import VecDBException
 
 DEFAULT_MAX_RETRY_DELAY = 60.0
@@ -68,6 +71,10 @@ class _CustomApiClient(ApiClient):
     Forward the user-configured timeout, when present, without imposing an
     SDK default.
     """
+
+    _TABLE_RESPONSE_TYPES = frozenset(
+        {"VecDBTableNoLinks", "VecDBTableCollection"}
+    )
 
     def call_api(
         self,
@@ -88,6 +95,68 @@ class _CustomApiClient(ApiClient):
             post_params,
             _request_timeout,
         )
+
+    @staticmethod
+    def _remove_implicit_distribution_sentinel(value: Any) -> bool:
+        """Drop the response-only ``NONE`` value materialized by PL/SQL.
+
+        The OpenAPI schema makes ``distribute_params`` optional and excludes
+        ``NONE`` from the allowed methods. PL/SQL may nevertheless include
+        this sentinel in a response when the caller omitted the object. That
+        response default is not explicit caller input and should not reach the
+        generated model's enum validator.
+        """
+        changed = False
+        if isinstance(value, dict):
+            distribution = value.get("distribute_params")
+            if (
+                isinstance(distribution, dict)
+                and distribution.get("distribute_method") == "NONE"
+            ):
+                del value["distribute_params"]
+                changed = True
+            for item in value.values():
+                changed = (
+                    _CustomApiClient._remove_implicit_distribution_sentinel(
+                        item
+                    )
+                    or changed
+                )
+        elif isinstance(value, list):
+            for item in value:
+                changed = (
+                    _CustomApiClient._remove_implicit_distribution_sentinel(
+                        item
+                    )
+                    or changed
+                )
+        return changed
+
+    def deserialize(
+        self,
+        response_text: str,
+        response_type: Any,
+        content_type: Optional[str],
+    ) -> Any:
+        """Normalize PL/SQL's implicit sentinel before generated parsing."""
+        response_name = (
+            response_type
+            if isinstance(response_type, str)
+            else getattr(response_type, "__name__", None)
+        )
+        if (
+            response_name in self._TABLE_RESPONSE_TYPES
+            and (content_type is None or "json" in content_type.lower())
+            and re.search(r'"distribute_method"\s*:\s*"NONE"', response_text)
+        ):
+            try:
+                response_data = json.loads(response_text)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if self._remove_implicit_distribution_sentinel(response_data):
+                    response_text = json.dumps(response_data)
+        return super().deserialize(response_text, response_type, content_type)
 
 
 class ORDSSettings:
@@ -268,22 +337,10 @@ class ORDSService:
                     "Unsupported vector_index_params field(s): "
                     f"{', '.join(sorted(unknown))}"
                 )
-            organization = vector.get("organization")
-            if organization == "INMEMORY GRAPH" and (
-                "distribute_params" not in vector
-                or vector["distribute_params"] is None
-            ):
-                raise ValueError(
-                    "vector_index_params.distribute_params cannot be None for "
-                    "organization 'INMEMORY GRAPH'; it must contain a valid "
-                    "distribute_method. Valid values are: 'ROWID RANGE', "
-                    "'SIMILARITY', 'PARTITION', "
-                    "'SUBPARTITION', 'DISTRIBUTE', 'AUTO'"
-                )
             if "distribute_params" in vector:
                 distribute = vector["distribute_params"]
-                # ``distribute_params`` is nullable for non-graph index
-                # organizations, but graph indexes require a method.
+                # ``distribute_params`` is nullable and is valid for either organization. When
+                # provided as an object, require the supported distribute_method field.
                 if distribute is None:
                     pass
                 elif not isinstance(distribute, dict):
@@ -650,13 +707,14 @@ class ORDSService:
         self,
         table_name: str,
         query_by: Dict[str, Any],
-        top_k: Union[float, int],
+        top_k: int,
         filters: Optional[Dict[str, Any]] = None,
         advanced_options: Optional[Dict[str, Any]] = None,
         include_vectors: Optional[bool] = None,
         output_selector: Optional[List[str]] = None,
         debug_flags: Optional[Dict[str, str]] = None,
     ) -> QueryResponse:
+        validate_positive_top_k(top_k)
         converted_debug_flags = self._convert_debug_flags(debug_flags)
         self._require_optional_dict(query_by, "query_by")
         self._require_optional_dict(filters, "filters")

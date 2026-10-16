@@ -3,19 +3,45 @@
 ## Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/
 ##
 
-import os
+from getpass import getpass
 
-from oracle_vecdb import OracleVecDB, Configuration
+from oracle_vecdb import Configuration, OracleVecDB, get_vecdb_oauth_token
 
 
 def main():
-    # Use a valid HTTPS ORDS VecDB endpoint. Example pattern:
-    # https://<host>:<port>/ords/<schema>/_/db-api/stable/vecdb/
-    config = Configuration(
-        rest_url="https://example.com/ords/foo/_/db-api/stable/vecdb/",
-        username="username",
-        password=os.getenv("DB_PASSWORD"),
-    )
+    # Replace these example values with your ORDS host, port, and schema.
+    host = "example.com"
+    port = 8443
+    schema = "foo"
+    ords_url = f"https://{host}:{port}/ords/{schema}"
+    rest_url = f"{ords_url}/_/db-api/stable/vecdb/"
+
+    # Choose OAuth client credentials or basic authentication.
+    ords_oauth = True
+
+    if ords_oauth:
+        # Create or obtain an OAuth client in ORDS. The client ID is entered
+        # visibly; getpass hides the client secret while you type it.
+        # TLS certificate verification is on by default. For a private CA,
+        # provide its bundle with the optional ssl_ca_cert argument below.
+        token_response = get_vecdb_oauth_token(
+            client_id=input("ORDS OAuth client ID: "),
+            client_secret=getpass("ORDS OAuth client secret: "),
+            token_url=f"{ords_url}/oauth/token",
+            timeout=(5, 30),  # connect timeout, then read timeout
+            # ssl_ca_cert="/path/to/ca-bundle.pem",
+        )
+        config = Configuration(
+            rest_url=rest_url,
+            access_token=token_response["access_token"],
+        )
+    else:
+        # Use this branch only when your ORDS deployment requires basic auth.
+        config = Configuration(
+            rest_url=rest_url,
+            username=input("Vector DB Username: "),
+            password=getpass("Vector DB Password: "),
+        )
 
     vecdb = OracleVecDB(config)
     table_name = "TEST_TABLE"

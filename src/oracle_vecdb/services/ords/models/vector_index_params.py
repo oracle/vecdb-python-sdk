@@ -146,29 +146,24 @@ class VectorIndexParams(BaseModel):
         if not isinstance(obj, dict):
             return cls.model_validate(obj)
 
-        _obj = cls.model_validate(
-            {
-                "vector_index_params": (
-                    VectorIndexParamsVectorIndexParams.from_dict(
-                        obj["vector_index_params"]
-                    )
-                    if obj.get("vector_index_params") is not None
-                    else None
-                ),
-                "metadata_index_params": (
-                    VectorIndexParamsMetadataIndexParams.from_dict(
-                        obj["metadata_index_params"]
-                    )
-                    if obj.get("metadata_index_params") is not None
-                    else None
-                ),
-                "parallel_creation": obj.get("parallel_creation"),
-                "index_type": obj.get("index_type"),
-            }
-        )
-        # store additional fields in additional_properties
-        for _key in obj.keys():
-            if _key not in cls.__properties:
-                _obj.additional_properties[_key] = obj.get(_key)
-
-        return _obj
+        values: Dict[str, Any] = {}
+        if "vector_index_params" in obj:
+            values["vector_index_params"] = (
+                VectorIndexParamsVectorIndexParams.from_dict(
+                    obj["vector_index_params"]
+                )
+            )
+        if "metadata_index_params" in obj:
+            values["metadata_index_params"] = (
+                VectorIndexParamsMetadataIndexParams.from_dict(
+                    obj["metadata_index_params"]
+                )
+            )
+        for field_name in ("parallel_creation", "index_type"):
+            if field_name in obj:
+                values[field_name] = obj[field_name]
+        instance = cls.model_validate(values)
+        for key, value in obj.items():
+            if key not in cls.__properties:
+                instance.additional_properties[key] = value
+        return instance

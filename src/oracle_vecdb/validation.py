@@ -56,8 +56,11 @@ def set_default_arguments(
     Dictionary values are merged recursively so a caller can override one
     nested option without discarding unspecified DefaultSettings defaults.
     """
-    signature = inspect.signature(function)
     defaults = DefaultSettings.get_default_args_for(function.__name__)
+    if not defaults:
+        return function
+
+    signature = inspect.signature(function)
     unknown_parameters = set(defaults).difference(signature.parameters)
     if unknown_parameters:
         error = DefaultSettingsParameterMismatchError(
@@ -91,15 +94,6 @@ def set_default_arguments(
                     arguments.arguments[parameter_name],
                 )
 
-        # Apply any future operation-aware defaults after the public arguments
-        # have been bound and unconditional defaults materialized.  Index
-        # distribution is deliberately validated as explicitly supplied.
-        arguments.arguments.update(
-            DefaultSettings.apply_operation_aware_defaults(
-                function.__name__,
-                arguments.arguments,
-            )
-        )
         return function(*arguments.args, **arguments.kwargs)
 
     return wrapper

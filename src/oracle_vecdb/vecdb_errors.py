@@ -204,3 +204,38 @@ class InvalidParameterCombinationError(VecDBError):
             locale=locale,
             params={"parameter_name": parameter_name, "detail": detail},
         )
+
+
+class OAuthTokenError(VecDBError):
+    """Raised when an OAuth token cannot be acquired or validated."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        detail: str,
+        *,
+        status: Optional[int] = None,
+        locale=None,
+    ):
+        """Create an OAuth token error with sanitized diagnostic details.
+
+        Args:
+            endpoint: Sanitized OAuth endpoint description.
+            detail: Safe failure detail that excludes credentials and tokens.
+            status: Optional HTTP status returned by the token endpoint.
+            locale: Optional error-message locale.
+        """
+        self.endpoint = endpoint
+        self.status = status
+        super().__init__(
+            "",
+            error_code="VECDB-014",
+            locale=locale,
+            params={
+                "endpoint": endpoint,
+                "status": (
+                    str(status) if status is not None else "unavailable"
+                ),
+                "detail": detail,
+            },
+        )

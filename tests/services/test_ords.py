@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 import pytest
@@ -58,6 +59,260 @@ def test_sdk_api_client_preserves_per_request_timeout(mocker):
     assert request.call_args.kwargs["_request_timeout"] == (
         1.0,
         2.0,
+    )  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "response_method, expected_method",
+    [("NONE", None), ("AUTO", "AUTO")],
+    ids=["implicit-database-default", "explicit-valid-method"],
+)
+def test_sdk_api_client_deserializes_distribution_default_only_when_valid(
+    response_method, expected_method
+):
+    client = ords_module._CustomApiClient(Configuration(rest_url=VALID_HOST))
+    response = client.deserialize(
+        response_text=json.dumps(
+            {
+                "table_name": "DOCS",
+                "index_params": {
+                    "vector_index_params": {
+                        "organization": "INMEMORY GRAPH",
+                        "distribute_params": {
+                            "distribute_method": response_method
+                        },
+                    }
+                },
+            }
+        ),
+        response_type="VecDBTableNoLinks",
+        content_type="application/json",
+    )
+
+    distribute_params = (
+        response.index_params.vector_index_params.distribute_params
+    )
+    if expected_method is None:
+        assert distribute_params is None  # nosec B101
+    else:
+        assert (
+            distribute_params.distribute_method == expected_method
+        )  # nosec B101
+
+
+def test_distribution_sentinel_removal_walks_nested_lists():
+    payload = {
+        "items": [
+            {
+                "index_params": {
+                    "distribute_params": {"distribute_method": "NONE"}
+                }
+            },
+            {
+                "index_params": {
+                    "distribute_params": {"distribute_method": "AUTO"}
+                }
+            },
+        ]
+    }
+
+    changed = (
+        ords_module._CustomApiClient._remove_implicit_distribution_sentinel(
+            payload
+        )
+    )
+
+    assert changed is True  # nosec B101
+    assert (
+        "distribute_params" not in payload["items"][0]["index_params"]
+    )  # nosec B101
+    assert payload["items"][1]["index_params"]["distribute_params"] == {
+        "distribute_method": "AUTO"
+    }  # nosec B101
+
+
+def test_deserializer_keeps_malformed_sentinel_json_for_parent_parser(mocker):
+    client = ords_module._CustomApiClient(Configuration(rest_url=VALID_HOST))
+    parent = ords_module._CustomApiClient.__mro__[1]
+    parent_deserialize = mocker.patch.object(
+        parent, "deserialize", return_value="parent-result"
+    )
+    malformed_json = '{"distribute_method":"NONE",'
+
+    result = client.deserialize(
+        malformed_json, "VecDBTableNoLinks", "application/json"
+    )
+
+    assert result == "parent-result"  # nosec B101
+    parent_deserialize.assert_called_once_with(
+        malformed_json, "VecDBTableNoLinks", "application/json"
+    )
+
+
+@pytest.mark.parametrize(
+    "index_params,message",
+    [
+        ({"vector_index_params": []}, "vector_index_params"),
+        (
+            {"vector_index_params": {"distribute_params": "AUTO"}},
+            "distribute_params",
+        ),
+        ({"metadata_index_params": []}, "metadata_index_params"),
+        ({"metadata_index_params": {"unknown": True}}, "metadata_index_params"),
+    ],
+)
+def test_index_parameter_field_validation_rejects_invalid_nested_values(
+    index_params, message
+):
+    with pytest.raises((TypeError, ValueError), match=message):
+        ORDSService._validate_index_params_fields(index_params)
+
+
+def test_ords_configuration_requires_an_endpoint(mocker):
+    mocker.patch.object(
+        ords_module.ORDSBaseConfiguration, "__init__", return_value=None
+    )
+
+    with pytest.raises(ValueError, match="requires an ORDS endpoint"):
+        ords_module.ORDSConfiguration()
+
+
+@pytest.mark.parametrize(
+    "max_retry_delay",
+    [
+        True,
+        float("inf"),
+        -1,
+        pytest.param(10**10000, id="float-conversion-overflow"),
+    ],
+)
+def test_ords_settings_rejects_invalid_maximum_retry_delay(max_retry_delay):
+    with pytest.raises(ValueError, match="max_retry_delay"):
+        ords_module.ORDSSettings(max_retry_delay=max_retry_delay)
+
+
+def test_upsert_vector_field_normalization_supports_aliases_and_legacy_properties(
+    monkeypatch,
+):
+    class FieldInfo:
+        alias = "ID"
+
+    class FakeModel:
+        model_fields = {"id": FieldInfo()}
+
+    setattr(FakeModel, "__properties", ["legacy_field"])
+    monkeypatch.setattr(
+        ords_module._models, "UpsertVectorsRequestVectorsInner", FakeModel
+    )
+
+    normalized = ORDSService._normalize_upsert_vector_fields(
+        {"ID": "v1", "legacy_field": "legacy-value"}
+    )
+
+    assert normalized == {
+        "id": "v1",
+        "legacy_field": "legacy-value",
+    }  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "method_name,arguments",
+    [
+        ("upsert_vectors", {"vectors": [{1: "v1"}]}),
+        ("upsert_vectors", {"vectors": [object()]}),
+        ("list_vectors", {"ids": [1]}),
+        ("delete_vectors", {"ids": [1]}),
+    ],
+)
+def test_vector_methods_reject_invalid_member_values(method_name, arguments):
+    service = _make_service()
+    common_arguments = {
+        "upsert_vectors": {"table_name": "docs"},
+        "list_vectors": {"table_name": "docs"},
+        "delete_vectors": {"table_name": "docs"},
+    }[method_name]
+
+    with pytest.raises(VecDBException):
+        getattr(service, method_name)(**common_arguments, **arguments)
+
+    assert service.vector_api.calls == []  # nosec B101
+
+
+def test_retry_after_parser_handles_case_variants_and_invalid_values(
+    monkeypatch,
+):
+    lower_case = TransportError(
+        status=429,
+        reason="throttled",
+        headers={"retry-after": "0.25"},
+    )
+    assert (
+        response_handlers_module.ORDSResponseHandler._retry_after_seconds(
+            lower_case
+        )
+        == 0.25
+    )  # nosec B101
+
+    missing = TransportError(
+        status=429, reason="throttled", headers={"X-Other": "value"}
+    )
+    assert (
+        response_handlers_module.ORDSResponseHandler._retry_after_seconds(
+            missing
+        )
+        is None
+    )  # nosec B101
+
+    malformed = TransportError(
+        status=429,
+        reason="throttled",
+        headers={"Retry-After": "invalid date"},
+    )
+    assert (
+        response_handlers_module.ORDSResponseHandler._retry_after_seconds(
+            malformed
+        )
+        is None
+    )  # nosec B101
+
+    naive_date = TransportError(
+        status=429,
+        reason="throttled",
+        headers={"Retry-After": "Wed, 21 Oct 2099 07:28:00"},
+    )
+    monkeypatch.setattr(response_handlers_module.time, "time", lambda: 0.0)
+    assert (
+        response_handlers_module.ORDSResponseHandler._retry_after_seconds(
+            naive_date
+        )
+        > 0
+    )  # nosec B101
+
+
+def test_retry_after_handler_does_not_retry_unsafe_operations():
+    error = TransportError(status=429, reason="throttled")
+
+    class Endpoint:
+        @ORDSResponseHandler
+        def create_index(self):
+            raise error
+
+    with pytest.raises(TransportError) as raised:
+        Endpoint().create_index()
+
+    assert raised.value is error  # nosec B101
+
+
+def test_retry_delay_is_zero_when_configuration_value_is_invalid():
+    settings = type("Settings", (), {"max_retry_delay": "invalid"})()
+    config = type("Config", (), {"ords_settings": settings})()
+    service = type("Service", (), {"config": config})()
+
+    assert (
+        response_handlers_module.ORDSResponseHandler._max_retry_delay(
+            (service,)
+        )
+        == 0.0
     )  # nosec B101
 
 
@@ -166,6 +421,28 @@ def test_collection_list_timeout_is_normalized_with_operation(
     assert "Increase Configuration.timeout and retry." in str(
         error
     )  # nosec B101
+
+
+def test_ssl_transport_error_preserves_certificate_cause(mocker):
+    config = Configuration(rest_url=VALID_HOST)
+    service = ORDSService(config)
+    request = mocker.patch.object(
+        service.api_client.rest_client.pool_manager,
+        "request",
+        side_effect=urllib3.exceptions.SSLError("certificate verify failed"),
+    )
+
+    with pytest.raises(VecDBException) as exc_info:
+        service.list_vector_tables()
+
+    error = exc_info.value
+    assert request.call_count == 1  # nosec B101
+    assert error.transport_category == "certificate_error"  # nosec B101
+    assert error.transport_error_type == "SSLError"  # nosec B101
+    assert error.retryable is False  # nosec B101
+    assert error.error_code == "CERTIFICATE_ERROR"  # nosec B101
+    assert "certificate verify failed" in str(error)  # nosec B101
+    assert "SSLError" in error.service_trace  # nosec B101
 
 
 class RecordingApi:
@@ -380,50 +657,35 @@ def test_generated_index_params_accepts_documented_distribution_method():
     }  # nosec B101
 
 
-def test_ords_service_rejects_graph_index_without_distribution_method():
+@pytest.mark.parametrize(
+    "include_distribution",
+    [False, True],
+    ids=["omitted", "explicit-null"],
+)
+def test_ords_service_accepts_graph_index_without_or_with_null_distribution(
+    include_distribution,
+):
     service = _make_service()
+    vector_index_params: Dict[str, Any] = {
+        "organization": "INMEMORY GRAPH",
+        "auto_index": True,
+        "distance_metric": "COSINE",
+        "accuracy": 95,
+        "advanced_params": {"neighbors": 10, "efConstruction": 100},
+    }
+    if include_distribution:
+        vector_index_params["distribute_params"] = None
 
-    with pytest.raises(
-        VecDBException,
-        match="distribute_params cannot be None.*INMEMORY GRAPH",
-    ):
-        service.create_index(
-            "docs",
-            {
-                "vector_index_params": {
-                    "auto_index": True,
-                    "organization": "INMEMORY GRAPH",
-                    "distance_metric": "COSINE",
-                    "accuracy": 95,
-                    "advanced_params": {
-                        "neighbors": 10,
-                        "efConstruction": 100,
-                    },
-                }
-            },
-        )
+    service.create_index("docs", {"vector_index_params": vector_index_params})
 
-    assert service.index_api.calls == []  # nosec B101
-
-
-def test_ords_service_rejects_graph_index_with_null_distribution_params():
-    service = _make_service()
-
-    with pytest.raises(
-        VecDBException,
-        match="distribute_params cannot be None.*INMEMORY GRAPH",
-    ):
-        service.create_index(
-            "docs",
-            {
-                "vector_index_params": {
-                    "organization": "INMEMORY GRAPH",
-                    "distribute_params": None,
-                }
-            },
-        )
-
-    assert service.index_api.calls == []  # nosec B101
+    request = _first_positional_request(service.index_api, "create_index")
+    serialized = request.index_params.to_dict()["vector_index_params"]
+    assert serialized["organization"] == "INMEMORY GRAPH"  # nosec B101
+    assert (
+        "distribute_params" in serialized
+    ) is include_distribution  # nosec B101
+    if include_distribution:
+        assert serialized["distribute_params"] is None  # nosec B101
 
 
 def test_ords_debug_flag_conversion():
@@ -859,21 +1121,22 @@ def test_ords_service_accepts_nullable_distribute_params():
     )
 
 
-def test_generated_index_params_accept_nullable_distribution_method():
+def test_generated_index_params_rejects_null_distribution_method():
     from oracle_vecdb.services.ords.models.vector_index_params import (
         VectorIndexParams,
     )
 
-    params = VectorIndexParams.from_dict(
-        {
-            "vector_index_params": {
-                "distribute_params": {"distribute_method": None}
+    with pytest.raises(
+        ValidationError, match="distribute_method must not be None"
+    ):
+        VectorIndexParams.from_dict(
+            {
+                "vector_index_params": {
+                    "distribute_params": {"distribute_method": None}
+                }
             }
-        }
-    )
-    assert (
-        params.to_dict()["vector_index_params"]["distribute_params"] == {}
-    )  # nosec B101
+        )
+
     payload = VectorIndexParams.from_dict(
         {"vector_index_params": {"distribute_params": None}}
     ).to_dict()
@@ -1025,6 +1288,8 @@ def test_ords_service_maps_search_index_and_model_requests():
     rerank_request = _first_positional_request(service.inference_api, "rerank")
 
     assert query_request.query_by == {"text": "hello"}  # nosec B101
+    assert query_request.top_k == 3  # nosec B101
+    assert query_request.to_dict()["topK"] == 3  # nosec B101
     assert query_request.output_selector == ["category", "price"]  # nosec B101
     assert isinstance(  # nosec B101
         create_index_request.index_params,
@@ -1050,6 +1315,21 @@ def test_ords_service_maps_search_index_and_model_requests():
     )
     assert load_model_request.model_params.provider == "database"  # nosec B101
     assert rerank_request.model_params.provider == "database"  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "top_k", [True, False, None, 0, -1, 0.2, 2.5, 2.0, set(), {}]
+)
+def test_ords_service_rejects_invalid_top_k_before_request(top_k):
+    """Reject invalid counts before constructing or dispatching the request."""
+    service = _make_service()
+
+    with pytest.raises(VecDBException) as error:
+        service.query("docs", query_by={"text": "hello"}, top_k=top_k)
+
+    assert "top_k" in str(error.value)  # nosec B101
+    assert "positive integer (>= 1)" in str(error.value)  # nosec B101
+    assert service.search_api.calls == []  # nosec B101
 
 
 def test_query_accepts_empty_string_output_selector_and_rejects_non_string():

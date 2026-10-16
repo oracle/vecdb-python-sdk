@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -98,11 +100,16 @@ def test_vector_index_rejects_invalid_ivf_advanced_params():
         )
 
 
-def test_vector_index_accepts_hnsw_advanced_params():
+@pytest.mark.parametrize(
+    "distribute_method",
+    ["AUTO", "DISTRIBUTE"],
+    ids=["auto", "distribute"],
+)
+def test_vector_index_accepts_hnsw_advanced_params(distribute_method):
     VectorIndexParams.model_validate(
         {
             "organization": "INMEMORY GRAPH",
-            "distribute_params": {"distribute_method": "AUTO"},
+            "distribute_params": {"distribute_method": distribute_method},
             "online_build": True,
             "advanced_params": {
                 "neighbors": 4,
@@ -114,13 +121,55 @@ def test_vector_index_accepts_hnsw_advanced_params():
     )
 
 
-def test_vector_index_rejects_invalid_hnsw_algorithm():
-    with pytest.raises(ValidationError, match="algorithm must be"):
+@pytest.mark.parametrize("distribute_method", ["NONE", "RANDOM"])
+def test_vector_index_rejects_unlisted_explicit_distribution_method(
+    distribute_method,
+):
+    with pytest.raises(ValidationError, match="distribute_method"):
+        VectorIndexParams.model_validate(
+            {
+                "organization": "INMEMORY GRAPH",
+                "distribute_params": {"distribute_method": distribute_method},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "include_distribution",
+    [False, True],
+    ids=["omitted", "explicit-null"],
+)
+def test_vector_index_accepts_hnsw_without_or_with_null_distribution(
+    include_distribution,
+):
+    payload: dict[str, Any] = {"organization": "INMEMORY GRAPH"}
+    if include_distribution:
+        payload["distribute_params"] = None
+
+    validated = VectorIndexParams.model_validate(payload)
+    assert validated.distribute_params is None  # nosec B101
+    assert (
+        "distribute_params" in validated.model_fields_set
+    ) is include_distribution  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "advanced_params, message",
+    [
+        ({"algorithm": "unsupported"}, "algorithm must be"),
+        ({"partitions": 8}, "advanced_params is invalid"),
+    ],
+    ids=["unsupported-algorithm", "ivf-option-for-hnsw"],
+)
+def test_vector_index_rejects_invalid_hnsw_advanced_params(
+    advanced_params, message
+):
+    with pytest.raises(ValidationError, match=message):
         VectorIndexParams.model_validate(
             {
                 "organization": "INMEMORY GRAPH",
                 "distribute_params": {"distribute_method": "AUTO"},
-                "advanced_params": {"algorithm": "unsupported"},
+                "advanced_params": advanced_params,
             }
         )
 
@@ -211,10 +260,21 @@ def test_validate_query_and_rerank_models_accept_documented_shapes():
     validate_rerank_model_params({"top_n": 3})
 
 
-@pytest.mark.parametrize("value", [True, 0, -1, "3"])
-def test_validate_positive_top_k_rejects_non_positive_or_non_numeric(value):
-    with pytest.raises(ValueError, match="greater than zero"):
+@pytest.mark.parametrize(
+    "value", [True, False, None, 0, -1, 0.2, 2.5, 2.0, "3", set(), {}]
+)
+def test_validate_positive_top_k_rejects_non_positive_or_non_integer(value):
+    """Reject booleans, floats, and values outside the positive integer range."""
+    with pytest.raises(
+        ValueError, match=r"top_k must be a positive integer \(>= 1\)"
+    ):
         validate_positive_top_k(value)
+
+
+@pytest.mark.parametrize("value", [1, 3])
+def test_validate_positive_top_k_accepts_positive_integers(value):
+    """Accept positive integer result counts, including the lower boundary."""
+    assert validate_positive_top_k(value) is None  # nosec B101
 
 
 def test_validate_list_vectors_accepts_pagination_and_ids():
@@ -255,11 +315,23 @@ def test_parameter_validators_reject_non_mapping_values(validator, name):
 
 
 def test_validate_operation_arguments_skips_missing_optional_values():
+    """Skip None for optional query fields and unknown operations."""
     validate_operation_arguments(
         "query",
-        {"query_by": None, "top_k": None, "advanced_options": None},
+        {"query_by": None, "top_k": 3, "advanced_options": None},
     )
     validate_operation_arguments("unknown_operation", {})
+
+
+def test_validate_operation_arguments_rejects_none_for_required_top_k():
+    """Validate required top_k even though optional query fields may be None."""
+    with pytest.raises(
+        ValueError, match=r"top_k must be a positive integer \(>= 1\)"
+    ):
+        validate_operation_arguments(
+            "query",
+            {"query_by": None, "top_k": None, "advanced_options": None},
+        )
 
 
 def test_validate_operation_arguments_dispatches_list_vectors_validation():

@@ -1,3 +1,4 @@
+# coding: utf-8
 ##
 ## Copyright (c) 2026 Oracle and/or its affiliates.
 ## Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/
@@ -482,6 +483,7 @@ class Configuration:
         """
         self.__debug = value
         if self.__debug:
+            # if debug status is True, turn on debug logging
             for _, logger in self.logger.items():
                 logger.setLevel(logging.DEBUG)
         else:
