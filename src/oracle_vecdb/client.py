@@ -1422,7 +1422,7 @@ class OracleVecDB:
         self,
         table_name: str,
         query_by: Dict[str, Any],
-        top_k: Union[float, int],
+        top_k: int,
         filters: Optional[Dict[str, Any]] = None,
         advanced_options: Optional[Dict[str, Any]] = None,
         include_vectors: Optional[bool] = None,

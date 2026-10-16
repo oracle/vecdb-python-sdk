@@ -58,19 +58,3 @@ class DefaultSettings:
         decorator can be applied to every public facade method safely.
         """
         return deepcopy(dict(cls._DEFAULT_ARGUMENTS.get(function_name, {})))
-
-    @classmethod
-    def apply_operation_aware_defaults(
-        cls,
-        function_name: str,
-        arguments: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        """Return arguments with any operation-aware defaults materialized.
-
-        Index distribution is intentionally not defaulted.  Callers selecting
-        ``INMEMORY GRAPH`` must explicitly choose a valid
-        ``distribute_method`` so the SDK does not hide an incomplete request.
-        The hook remains for future verified operation-aware defaults.
-        """
-        del function_name
-        return dict(arguments)

@@ -8,7 +8,7 @@ authors = [
 license = "UPL-1.0"
 license-files = ["LICENSE.txt"]
 readme = "README.md"
-requires-python = ">=3.10,<3.15"
+requires-python = ">=3.10,<3.16"
 keywords = ["Oracle", "vecdb", "vector", "database", "ords", "sdk"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -19,6 +19,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Database :: Database Engines/Servers",
   "Topic :: Software Development :: Libraries",
 ]

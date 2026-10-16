@@ -74,6 +74,29 @@ def test_configuration_module_missing_attribute_raises_attribute_error():
         getattr(configuration_module, "does_not_exist")
 
 
+def test_configuration_accessors_and_validation_of_none_timeout():
+    configuration = Configuration(rest_url=VALID_HOST)
+
+    assert (
+        ConfigurationManualMixin._validate_timeout(None) is None
+    )  # nosec B101
+    assert configuration.authentication_mode  # nosec B101
+    assert (
+        configuration.get_host_from_settings(None) == configuration.rest_url
+    )  # nosec B101
+    with pytest.raises(AttributeError, match="not part of the public SDK"):
+        _ = configuration.host
+    with pytest.raises(AttributeError, match="not part of the public SDK"):
+        configuration.host = "https://example.com"
+
+    class CustomConfiguration(Configuration):
+        pass
+
+    assert isinstance(  # nosec B101
+        Configuration.__new__(CustomConfiguration), CustomConfiguration
+    )
+
+
 def test_configuration_extensions_are_combined_with_public_facade():
     assert callable(apply_configuration_extensions)  # nosec B101
     assert (  # nosec B101
@@ -651,3 +674,12 @@ def test_ords_base_configuration_properties(monkeypatch):
     assert cfg.has_rest_url is True  # nosec B101
     assert cfg.logger_file is None  # nosec B101
     assert "%(levelname)s" in cfg.logger_format  # nosec B101
+
+
+def test_ords_base_configuration_reports_missing_rest_url():
+    cfg = ORDSBaseConfiguration.__new__(ORDSBaseConfiguration)
+
+    assert (
+        ORDSBaseConfiguration.has_rest_url.__get__(cfg, ORDSBaseConfiguration)
+        is False
+    )  # nosec B101

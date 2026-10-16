@@ -18,12 +18,21 @@ from oracle_vecdb.configuration import Configuration
 from oracle_vecdb.data_types import UpsertVectorsResponse
 from oracle_vecdb.service_protocol import VecDBServiceProtocol
 from oracle_vecdb.vecdb_exception import VecDBException
+from oracle_vecdb.validation import (
+    _merge_default_mapping,
+    set_default_arguments,
+    validate_resource_names,
+)
 from oracle_vecdb.vecdb_errors import (
+    InvalidParameterCombinationError,
     InvalidIndexJobNameFormatError,
+    InvalidIndexJobLogError,
     InvalidLoadJobNameFormatError,
+    InvalidLoadJobLogError,
     InvalidModelNameFormatError,
     InvalidTableNameFormatError,
     InvalidVectorsError,
+    ResourceNotFoundError,
     VectorPayloadTooLargeError,
 )
 
@@ -122,6 +131,24 @@ def test_query_forwards_output_selector_to_active_backend(mocker):
     )
 
 
+@pytest.mark.parametrize(
+    "top_k", [True, False, None, 0, -1, 0.2, 2.5, 2.0, set(), {}]
+)
+def test_query_rejects_invalid_top_k_before_backend_call(mocker, top_k):
+    """Reject invalid result counts locally without calling the backend."""
+    client, active_backend, _ = _make_client(mocker)
+
+    with pytest.raises(VecDBException) as error:
+        client.query(table_name="docs", query_by={"text": "hi"}, top_k=top_k)
+
+    assert error.value.is_original_exception(  # nosec B101
+        InvalidParameterCombinationError
+    )
+    assert "top_k" in str(error.value)  # nosec B101
+    assert "positive integer (>= 1)" in str(error.value)  # nosec B101
+    assert active_backend.calls == []  # nosec B101
+
+
 def test_common_spec_applies_defaults_for_omitted_arguments(mocker):
     """Verify omitted facade arguments are populated from DefaultSettings.
 
@@ -155,36 +182,83 @@ def test_common_spec_applies_defaults_for_omitted_arguments(mocker):
     assert active_backend.calls[1][2]["include_vectors"] is False  # nosec B101
 
 
-def test_common_spec_rejects_graph_index_without_distribution_method(mocker):
-    client, active_backend, _ = _make_client(mocker)
+def test_default_mapping_merges_nested_values_without_mutating_inputs():
+    defaults = {"options": {"pagination": {"limit": 15, "offset": 0}}}
+    supplied = {"options": {"pagination": {"limit": 5}}}
 
-    with pytest.raises(
-        VecDBException,
-        match="distribute_params cannot be None.*INMEMORY GRAPH",
-    ):
-        client.create_index(
-            table_name="docs",
-            index_params={
-                "vector_index_params": {"organization": "INMEMORY GRAPH"}
+    merged = _merge_default_mapping(defaults, supplied)
+
+    assert merged == {  # nosec B101
+        "options": {"pagination": {"limit": 5, "offset": 0}}
+    }
+    assert defaults["options"]["pagination"]["limit"] == 15  # nosec B101
+    assert supplied == {"options": {"pagination": {"limit": 5}}}  # nosec B101
+
+
+def test_default_settings_reject_a_parameter_missing_from_signature(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        DefaultSettings,
+        "get_default_args_for",
+        classmethod(lambda cls, name: {"unknown": True}),
+    )
+
+    def operation(value):
+        return value
+
+    with pytest.raises(VecDBException, match="unknown"):
+        set_default_arguments(operation)
+
+
+def test_resource_name_decorator_skips_omitted_parameters():
+    @validate_resource_names(table_name=InvalidTableNameFormatError)
+    def operation(table_name="default"):
+        return table_name
+
+    assert operation() == "default"  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "include_distribution",
+    [False, True],
+    ids=["omitted", "explicit-null"],
+)
+def test_common_spec_accepts_graph_index_without_or_with_null_distribution(
+    mocker, include_distribution
+):
+    client, active_backend, _ = _make_client(mocker)
+    index_params: Dict[str, Any] = {
+        "vector_index_params": {"organization": "INMEMORY GRAPH"}
+    }
+    if include_distribution:
+        index_params["vector_index_params"]["distribute_params"] = None
+
+    client.create_index(table_name="docs", index_params=index_params)
+
+    assert active_backend.calls == [  # nosec B101
+        (
+            "create_index",
+            (),
+            {
+                "table_name": "docs",
+                "index_params": index_params,
+                "debug_flags": None,
             },
         )
+    ]
 
-    assert active_backend.calls == []  # nosec B101
 
-
-def test_common_spec_rejects_graph_index_with_null_distribution_params(mocker):
+def test_common_spec_rejects_unlisted_explicit_distribution_method(mocker):
     client, active_backend, _ = _make_client(mocker)
 
-    with pytest.raises(
-        VecDBException,
-        match="distribute_params cannot be None.*INMEMORY GRAPH",
-    ):
+    with pytest.raises(VecDBException, match="distribute_method"):
         client.create_index(
             table_name="docs",
             index_params={
                 "vector_index_params": {
                     "organization": "INMEMORY GRAPH",
-                    "distribute_params": None,
+                    "distribute_params": {"distribute_method": "NONE"},
                 }
             },
         )
@@ -701,6 +775,90 @@ def test_facade_rejects_unsafe_resource_name_values(
 
     assert exception.value.is_original_exception(error_type)  # nosec B101
     assert active_backend.calls == []  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "log_method,describe_method,error_type",
+    [
+        (
+            "get_vector_load_job_log",
+            "describe_vector_load_job",
+            InvalidLoadJobLogError,
+        ),
+        ("get_index_job_log", "describe_index_job", InvalidIndexJobLogError),
+    ],
+)
+def test_facade_rejects_job_logs_before_terminal_state(
+    mocker, log_method, describe_method, error_type
+):
+    client, backend, _ = _make_client(mocker)
+    mocker.patch.object(
+        client, describe_method, return_value=SimpleNamespace(state="RUNNING")
+    )
+
+    with pytest.raises(error_type):
+        getattr(client, log_method)("job1")
+
+    assert backend.calls == []  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "log_method,describe_method",
+    [
+        ("get_vector_load_job_log", "describe_vector_load_job"),
+        ("get_index_job_log", "describe_index_job"),
+    ],
+)
+def test_facade_normalizes_missing_job_log_resource(
+    mocker, log_method, describe_method
+):
+    client, backend, _ = _make_client(mocker)
+    mocker.patch.object(
+        client,
+        describe_method,
+        side_effect=VecDBException(status=404, reason="not found"),
+    )
+
+    with pytest.raises(VecDBException) as error:
+        getattr(client, log_method)("missing-job")
+
+    assert error.value.is_original_exception(
+        ResourceNotFoundError
+    )  # nosec B101
+    assert backend.calls == []  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "log_method,describe_method",
+    [
+        ("get_vector_load_job_log", "describe_vector_load_job"),
+        ("get_index_job_log", "describe_index_job"),
+    ],
+)
+def test_facade_propagates_non_not_found_job_status_errors(
+    mocker, log_method, describe_method
+):
+    client, _, _ = _make_client(mocker)
+    service_error = VecDBException(status=503, reason="unavailable")
+    mocker.patch.object(client, describe_method, side_effect=service_error)
+
+    with pytest.raises(VecDBException) as error:
+        getattr(client, log_method)("job1")
+
+    assert error.value is service_error  # nosec B101
+
+
+def test_upsert_batch_rejects_vector_that_exceeds_batch_limit(
+    mocker, monkeypatch
+):
+    client, backend, _ = _make_client(mocker)
+    monkeypatch.setattr(client_module, "_MAX_UPSERT_BATCH_BYTES", 20)
+    mocker.patch.object(client, "_upsert_vector_json_size", return_value=19)
+
+    with pytest.raises(VectorPayloadTooLargeError):
+        client._upsert_vectors_in_batches("docs", [{"id": "v1"}], None)
+
+    assert backend.calls == []  # nosec B101
 
 
 @pytest.mark.parametrize(

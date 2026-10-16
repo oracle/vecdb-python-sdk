@@ -1,10 +1,20 @@
 import json
 import builtins
+import socket
+import ssl
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
-from urllib3.exceptions import MaxRetryError, ReadTimeoutError
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    MaxRetryError,
+    NameResolutionError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
 from oracle_vecdb import VecDBException
 from oracle_vecdb.services.ords.exceptions import ApiException
 import oracle_vecdb.vecdb_exception as vecdb_exception_module
@@ -422,6 +432,208 @@ def test_exception_redaction_handles_collections_bytes_and_serializers():
     VecDBException._redact_value(BrokenSerializer())
 
 
+def test_exception_redaction_handles_depth_cycles_and_annotation_shapes():
+    circular = []
+    circular.append(circular)
+    truncated = VecDBException._redact_value(
+        {"value": "deep"}, _depth=vecdb_exception_module._MAX_DIAGNOSTIC_DEPTH
+    )
+
+    assert VecDBException._redact_value(circular) == [  # nosec B101
+        vecdb_exception_module._CIRCULAR_REFERENCE
+    ]
+    assert (
+        truncated == vecdb_exception_module._NESTED_DIAGNOSTIC_TRUNCATED
+    )  # nosec B101
+    assert VecDBException._sanitize_arguments(  # nosec B101
+        {"kwargs": {"annotations": None}}
+    ) == {"kwargs": {"annotations": None}}
+    assert VecDBException._sanitize_arguments(  # nosec B101
+        {"kwargs": {"annotations": "invalid"}}
+    ) == {"kwargs": {"annotations": "<redacted>"}}
+
+
+def test_transport_diagnostic_helpers_handle_unusual_values():
+    class ReprFallback:
+        def __str__(self):
+            return cast(str, 7)
+
+        def __repr__(self):
+            return "safe repr"
+
+    class HostileAttribute:
+        @property
+        def reason(self):
+            raise RuntimeError("unavailable")
+
+    nested = Exception("nested")
+    parent = Exception(nested)
+    parent.reason = nested
+
+    assert (
+        vecdb_exception_module._safe_string(ReprFallback()) == "safe repr"
+    )  # nosec B101
+    assert (
+        vecdb_exception_module._safe_attribute(  # nosec B101
+            HostileAttribute(), "reason", "fallback"
+        )
+        == "fallback"
+    )
+    assert vecdb_exception_module._exception_chain(parent) == [  # nosec B101
+        parent,
+        nested,
+    ]
+    assert not vecdb_exception_module._has_errno(  # nosec B101
+        SimpleNamespace(errno=[]), {1}
+    )
+
+
+@pytest.mark.parametrize(
+    "error, expected_category",
+    [
+        (Exception("TLS handshake failed"), "ssl_error"),
+        (Exception("name or service not known"), "dns_failure"),
+        (Exception("read timed out"), "read_timeout"),
+        (Exception("connection reset by peer"), "connection_reset"),
+        (Exception("connection refused"), "connect_failure"),
+        (Exception("connection timeout"), "connect_timeout"),
+        (Exception("broken pipe"), "socket_failure"),
+        (Exception("request timed out"), "timeout"),
+        (ConnectionAbortedError("aborted"), "socket_failure"),
+    ],
+    ids=[
+        "tls-text",
+        "dns-text",
+        "read-timeout-text",
+        "reset-text",
+        "connect-failure-text",
+        "connect-timeout-text",
+        "socket-failure-text",
+        "timeout-text",
+        "socket-error-type",
+    ],
+)
+def test_transport_classification_recognizes_fallback_diagnostics(
+    error, expected_category
+):
+    category, _ = vecdb_exception_module._transport_classification(error)
+
+    assert category == expected_category  # nosec B101
+
+
+def test_timeout_helper_only_accepts_timeout_categories():
+    assert vecdb_exception_module._is_timeout_exception(  # nosec B101
+        Exception("read timed out")
+    )
+    assert not vecdb_exception_module._is_timeout_exception(  # nosec B101
+        Exception("unrelated failure")
+    )
+
+
+def test_exception_redaction_stops_recursive_serializers():
+    class RecursiveSerializer:
+        def to_dict(self):
+            return self
+
+    assert (
+        VecDBException._redact_value(RecursiveSerializer())  # nosec B101
+        == vecdb_exception_module._CIRCULAR_REFERENCE
+    )
+
+
+def test_safe_json_fallback_redacts_unknown_values_and_vector_guidance():
+    class UnsafeValue:
+        def __str__(self):
+            return "access_token=DO_NOT_LEAK"
+
+    rendered = VecDBException._safe_json({"value": UnsafeValue()})
+
+    assert "DO_NOT_LEAK" not in rendered  # nosec B101
+    assert "<redacted>" in rendered  # nosec B101
+    assert (
+        VecDBException.vector_id_null_guidance(
+            "ORA-01400: cannot insert NULL into (SCHEMA.TABLE.OTHER_COLUMN)"
+        )
+        is None
+    )  # nosec B101
+
+
+def test_exception_formatting_falls_back_for_non_json_response_values():
+    class NonSerializable:
+        def __str__(self):
+            return "backend detail token=do-not-leak"
+
+    class Unprintable:
+        def __str__(self):
+            raise RuntimeError("secret=do-not-leak")
+
+        def __repr__(self):
+            raise RuntimeError("secret=do-not-leak")
+
+    error = VecDBException.from_service_error(
+        "query",
+        {"kwargs": {"table_name": "DOCS"}},
+        "ORDSService",
+        ServiceError(
+            status=500,
+            reason="Internal Server Error",
+            body={
+                "code": "BACKEND_FAILURE",
+                "message": "The backend rejected the query",
+                "details": [NonSerializable(), Unprintable()],
+            },
+        ),
+    )
+
+    rendered = "\n".join(
+        (
+            str(error),
+            repr(error),
+            error.format(include_full_ords_response=True),
+        )
+    )
+
+    assert "BACKEND_FAILURE" in rendered  # nosec B101
+    assert "The backend rejected the query" in rendered  # nosec B101
+    assert "backend detail" in rendered  # nosec B101
+    assert "<unprintable Unprintable>" in rendered  # nosec B101
+    assert "do-not-leak" not in rendered  # nosec B101
+    assert error.status == 500  # nosec B101
+    assert error.operation == "query"  # nosec B101
+    assert error.original_exception_type is ServiceError  # nosec B101
+
+
+def test_exception_formatting_handles_circular_response_values():
+    circular_body = {
+        "code": "CIRCULAR_FAILURE",
+        "message": "The backend returned a circular diagnostic",
+    }
+    circular_body["details"] = [circular_body]
+
+    error = VecDBException.from_service_error(
+        "query",
+        {},
+        "ORDSService",
+        ServiceError(status=500, body=circular_body),
+    )
+
+    rendered = "\n".join(
+        (
+            str(error),
+            repr(error),
+            error.format(include_full_ords_response=True),
+        )
+    )
+
+    assert "CIRCULAR_FAILURE" in rendered  # nosec B101
+    assert (
+        "The backend returned a circular diagnostic" in rendered
+    )  # nosec B101
+    assert "<circular reference>" in rendered  # nosec B101
+    assert error.status == 500  # nosec B101
+    assert error.operation == "query"  # nosec B101
+
+
 @pytest.mark.parametrize(
     "key",
     [
@@ -634,8 +846,91 @@ def test_wrapped_urllib3_timeout_has_timeout_code_and_message():
     rendered = str(error)
 
     assert error.error_code == "TIMEOUT"  # nosec B101
+    assert error.transport_category == "read_timeout"  # nosec B101
+    assert error.retryable is True  # nosec B101
     assert "list_vector_tables" in rendered  # nosec B101
     assert "Increase Configuration.timeout and retry." in rendered  # nosec B101
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "category", "retryable", "error_code"),
+    [
+        (
+            ConnectTimeoutError("pool", "https://example.invalid"),
+            "connect_timeout",
+            True,
+            "TIMEOUT",
+        ),
+        (
+            ReadTimeoutError(
+                cast(Any, "pool"), "https://example.invalid", "read timed out"
+            ),
+            "read_timeout",
+            True,
+            "TIMEOUT",
+        ),
+        (
+            NameResolutionError(
+                "db.example.invalid",
+                cast(Any, "pool"),
+                socket.gaierror(-2, "Name or service not known"),
+            ),
+            "dns_failure",
+            False,
+            "DNS_FAILURE",
+        ),
+        (
+            ConnectionRefusedError("connection refused"),
+            "connect_failure",
+            True,
+            "CONNECTION_FAILURE",
+        ),
+        (
+            ConnectionResetError("connection reset by peer"),
+            "connection_reset",
+            True,
+            "CONNECTION_RESET",
+        ),
+        (
+            ProtocolError("connection reset by peer"),
+            "connection_reset",
+            True,
+            "CONNECTION_RESET",
+        ),
+        (
+            SSLError("TLS handshake failed"),
+            "ssl_error",
+            False,
+            "SSL_ERROR",
+        ),
+        (
+            ssl.SSLCertVerificationError("certificate verify failed"),
+            "certificate_error",
+            False,
+            "CERTIFICATE_ERROR",
+        ),
+    ],
+)
+def test_transport_failures_have_stable_categories_and_retryability(
+    transport_error, category, retryable, error_code
+):
+    error = VecDBException.from_service_error(
+        "query",
+        {},
+        "ORDSService",
+        transport_error,
+    )
+
+    rendered = str(error)
+
+    assert error.transport_category == category  # nosec B101
+    assert error.retryable is retryable  # nosec B101
+    assert error.error_code == error_code  # nosec B101
+    assert (
+        error.transport_error_type == type(transport_error).__name__
+    )  # nosec B101
+    assert error.original_exception_type is type(transport_error)  # nosec B101
+    assert rendered  # nosec B101
 
 
 def test_unstructured_error_redacts_marked_secrets_but_preserves_diagnostics():
@@ -725,6 +1020,9 @@ def test_wrapped_exception_exposes_standard_attributes_for_all_error_shapes():
         "operation",
         "arguments",
         "service_name",
+        "transport_category",
+        "transport_error_type",
+        "retryable",
         "error_code",
         "error_message",
         "error_type",

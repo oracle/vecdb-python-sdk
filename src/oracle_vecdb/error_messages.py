@@ -87,4 +87,18 @@ ERROR_MESSAGES: Mapping[str, Mapping[str, str]] = {
         "cause": "The request violates a deterministic parameter constraint defined by the VecDB PL/SQL API.",
         "action": "Correct the parameter value or combination and retry the operation.",
     },
+    "VECDB-014": {
+        "message": (
+            "OAuth token request failed for {endpoint} "
+            "(HTTP status {status}): {detail}."
+        ),
+        "cause": (
+            "The OAuth server did not return a valid token response, "
+            "or the request could not be completed."
+        ),
+        "action": (
+            "Verify the token URL, client credentials, TLS/CA configuration, "
+            "timeout, proxy, and network access."
+        ),
+    },
 }
