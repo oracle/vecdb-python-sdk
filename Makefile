@@ -23,6 +23,8 @@ TARGET_DIRS = $(SOURCE_DIR) tests examples
 REPORT ?= 
 INTEGRATION_TEST_WORKERS ?= 10
 DEBUG ?= 1
+PERFORMANCE_TEST ?= false
+PERFORMANCE_TEST_ENABLED := $(if $(filter 1 true TRUE True yes YES Yes on ON On,$(PERFORMANCE_TEST)),true,false)
 INTEGRATION_TEST_PARALLEL_FILES ?= 
 # Kept for callers that select a subset of files.  Those files are added to
 # the same bounded xdist pool; a second pool oversubscribes the VecDB service.
@@ -136,21 +138,25 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 	@set +e; \
 	export RUN_INTEGRATION_TESTS=true; \
 	export VECDB_REQUIRE_INTEGRATION_TEST_ENV=true; \
+	export PERFORMANCE_TEST="$(PERFORMANCE_TEST)"; \
 	export PYTHONPATH="$(abspath $(SOURCE_DIR))"; \
 	export VECDB_TEST_RUN_ID="$${VECDB_TEST_RUN_ID:-$$(date +%Y%m%d%H%M%S)}"; \
-	EXCLUDED_TEST_FILE="dev-tools/tests/integration/test_tkvcvecdb_sdk_sample_sanity.py"; \
 	TEST_FILES=(); \
 	if [ -n "$(INTEGRATION_TEST_PARALLEL_FILES)" ]; then \
 		for test_file in $(INTEGRATION_TEST_PARALLEL_FILES); do \
-			if [ "$$test_file" != "$$EXCLUDED_TEST_FILE" ] && [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ]; then \
+			if [ "$(PERFORMANCE_TEST_ENABLED)" = "true" ] || [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ]; then \
 				TEST_FILES+=("$$test_file"); \
 			fi; \
 		done; \
 	else \
-		while IFS= read -r test_file; do TEST_FILES+=("$$test_file"); done < <(find dev-tools/tests/integration -type f -name 'test_*.py' ! -name 'test_tkvcvecdb_sdk_sample_sanity.py' -print | sort); \
+		while IFS= read -r test_file; do \
+			if [ "$(PERFORMANCE_TEST_ENABLED)" = "true" ] || [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ]; then \
+				TEST_FILES+=("$$test_file"); \
+			fi; \
+		done < <(find dev-tools/tests/integration -type f -name 'test_*.py' -print | sort); \
 	fi; \
 	for test_file in $(INTEGRATION_TEST_SERIAL_FILES); do \
-		if [ "$$test_file" != "$$EXCLUDED_TEST_FILE" ] && [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ] && [[ ! " $${TEST_FILES[*]} " =~ " $$test_file " ]]; then TEST_FILES+=("$$test_file"); fi; \
+		if { [ "$(PERFORMANCE_TEST_ENABLED)" = "true" ] || [ "$$(basename "$$test_file")" != "test_tkvcvecdb_sdk_sample_sanity.py" ]; } && [[ ! " $${TEST_FILES[*]} " =~ " $$test_file " ]]; then TEST_FILES+=("$$test_file"); fi; \
 	done; \
 	REPORT_ARG=(); \
 	if [ -n "$(REPORT)" ]; then \
@@ -163,6 +169,8 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 	TEST_STATUS=0; \
 	if [ "$${#TEST_FILES[@]}" -eq 0 ]; then \
 		echo "No integration test files selected."; \
+		if [ "$(PERFORMANCE_TEST_ENABLED)" != "true" ]; then echo "Set PERFORMANCE_TEST=true to include performance-gated integration tests."; fi; \
+		TEST_STATUS=2; \
 	elif [ "$(DEBUG)" -gt 0 ]; then \
 		MASTER_PID=$$$$ $(PYTEST) \
 			-rfE \
@@ -190,7 +198,7 @@ integration_test: reports_dirs ## Run live VecDB integration tests
 		TEST_STATUS=$$?; \
 	fi; \
 	set -e; \
-	if [ -n "$(REPORT)" ]; then \
+	if [ -n "$(REPORT)" ] && [ "$${#TEST_FILES[@]}" -gt 0 ]; then \
 		$(PYTHON) dev-tools/merge_junit_reports.py \
 			--input-dir "$(INTEGRATION_TEST_REPORT_SHARDS_DIR)" \
 			--output "$(INTEGRATION_TEST_REPORT_DIR)/pytest_report.xml"; \

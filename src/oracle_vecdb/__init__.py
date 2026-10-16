@@ -4,9 +4,11 @@
 ##
 
 from .client import OracleVecDB  # noqa: F401
+from .auth import get_vecdb_oauth_token  # noqa: F401
 from . import data_types  # noqa: F401
 from .configuration import Configuration  # noqa: F401
 from .vecdb_errors import VecDBError  # noqa: F401
 from .vecdb_errors import InsecureConnectionError  # noqa: F401
 from .vecdb_errors import InvalidHostFormatError  # noqa: F401
+from .vecdb_errors import OAuthTokenError  # noqa: F401
 from .vecdb_exception import VecDBException  # noqa: F401

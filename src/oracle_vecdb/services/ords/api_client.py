@@ -1,3 +1,4 @@
+# coding: utf-8
 ##
 ## Copyright (c) 2026 Oracle and/or its affiliates.
 ## Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/
@@ -724,9 +725,9 @@ class ApiClient:
             m = re.search(
                 r'filename=[\'"]?([^\'"\s]+)[\'"]?', content_disposition
             )
-            assert (  # nosec B101
+            assert (
                 m is not None
-            ), "Unexpected 'content-disposition' header value"
+            ), "Unexpected 'content-disposition' header value"  # nosec B101
             filename = os.path.basename(
                 m.group(1)
             )  # Strip any directory traversal

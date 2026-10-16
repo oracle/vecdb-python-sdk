@@ -6,6 +6,36 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
+1.0.6 - 2026-10-16
+------------------
+
+Added
+~~~~~
+
+- Added network failure details to ``VecDBException`` so callers can see
+  whether a request failed because of a timeout, DNS lookup, connection, or
+  TLS/certificate problem, and whether retrying may help.
+- Added ``get_vecdb_oauth_token`` for OAuth client-credentials token requests,
+  with HTTPS validation, configurable TLS, timeout and proxy settings, and
+  sanitized ``OAuthTokenError`` diagnostics. Updated ``examples/test_client.py``
+  to demonstrate OAuth authentication and retain a basic-auth option.
+
+Changed
+~~~~~~~
+
+- Network failures now include distinct error codes and advice on what to
+  check next.
+- Removed ``distribute_method`` validation for "INMEMORY GRAPH" organization
+  when ``distribute_params`` is null.
+- ``query.top_k`` must now be a positive integer; booleans and fractional
+  values are rejected.
+
+Fixed
+~~~~~
+
+- Made exception formatting resilient to unsupported, circular, and deeply
+  nested diagnostic values while keeping sensitive data redacted.
+
 1.0.5 - 2026-10-01
 ------------------
 

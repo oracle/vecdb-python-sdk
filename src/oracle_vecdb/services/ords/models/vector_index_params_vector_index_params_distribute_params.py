@@ -40,7 +40,7 @@ class VectorIndexParamsVectorIndexParamsDistributeParams(BaseModel):
     def distribute_method_validate_enum(cls, value):
         """Validates the enum"""
         if value is None:
-            return value
+            raise ValueError("distribute_method must not be None")
 
         if value not in set(
             [
@@ -94,6 +94,14 @@ class VectorIndexParamsVectorIndexParamsDistributeParams(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
+        # set to None if distribute_method (nullable) is None
+        # and model_fields_set contains the field
+        if (
+            self.distribute_method is None
+            and "distribute_method" in self.model_fields_set
+        ):
+            _dict["distribute_method"] = None
+
         return _dict
 
     @classmethod
@@ -105,7 +113,7 @@ class VectorIndexParamsVectorIndexParamsDistributeParams(BaseModel):
         if not isinstance(obj, dict):
             return cls.model_validate(obj)
 
-        _obj = cls.model_validate(
-            {"distribute_method": obj.get("distribute_method")}
-        )
-        return _obj
+        values: Dict[str, Any] = {}
+        if "distribute_method" in obj:
+            values["distribute_method"] = obj["distribute_method"]
+        return cls.model_validate(values)

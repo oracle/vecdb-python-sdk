@@ -29,7 +29,7 @@ class IndexOrganization(str, Enum):
 
 
 class DistributeMethod(str, Enum):
-    """Values accepted by the PL/SQL distribute-method validation."""
+    """Distribution methods defined by the public OpenAPI schema."""
 
     ROWID_RANGE = "ROWID RANGE"
     SIMILARITY = "SIMILARITY"
@@ -132,19 +132,6 @@ class VectorIndexParams(_StrictModel):
         # PL/SQL uses PARTITIONS when organization is omitted.  Cross-field
         # validation must use that effective value, not merely the raw input.
         organization = self.organization or IndexOrganization.PARTITIONS
-
-        # When distribute_params is not present reject the request as
-        # it would otherwise reach PL/SQL without a valid method.
-        if (
-            organization == IndexOrganization.INMEMORY_GRAPH
-            and self.distribute_params is None
-        ):
-            raise ValueError(
-                "vector_index_params.distribute_params cannot be None for "
-                "organization 'INMEMORY GRAPH'; it must contain a valid "
-                "distribute_method. Valid values are: "
-                + ", ".join(f"'{method.value}'" for method in DistributeMethod)
-            )
 
         # Distribution is implemented by the HNSW / INMEMORY GRAPH path.  IVF
         # PARTITIONS indexes must not receive a distribute_params object.
@@ -406,12 +393,8 @@ def validate_query_advanced_options(value: Any) -> None:
 
 
 def validate_positive_top_k(value: Any) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or value <= 0
-    ):
-        raise ValueError("top_k must be greater than zero")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("top_k must be a positive integer (>= 1)")
 
 
 def validate_list_vectors_arguments(arguments: Mapping[str, Any]) -> None:
@@ -464,9 +447,11 @@ def validate_operation_arguments(
         operation, {}
     ).items():
         value = arguments.get(parameter_name)
-        # A missing value and explicit None both map to PL/SQL DEFAULT NULL
-        # where applicable, so no local JSON validation is needed in that case.
-        if value is not None:
+        # Optional arguments may map None to a PL/SQL default, but query top_k
+        # is required and must be validated even when explicitly set to None.
+        if value is not None or (
+            operation == "query" and parameter_name == "top_k"
+        ):
             validator(value)
 
     if operation == "list_vectors":

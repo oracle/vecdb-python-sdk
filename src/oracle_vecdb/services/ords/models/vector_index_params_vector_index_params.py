@@ -215,7 +215,7 @@ class VectorIndexParamsVectorIndexParams(BaseModel):
         if not isinstance(obj, dict):
             return cls.model_validate(obj)
 
-        model_values: Dict[str, Any] = {}
+        values: Dict[str, Any] = {}
         for field_name in (
             "auto_index",
             "organization",
@@ -227,20 +227,15 @@ class VectorIndexParamsVectorIndexParams(BaseModel):
             "advanced_params",
         ):
             if field_name in obj:
-                model_values[field_name] = obj.get(field_name)
+                values[field_name] = obj[field_name]
         if "distribute_params" in obj:
-            model_values["distribute_params"] = (
+            values["distribute_params"] = (
                 VectorIndexParamsVectorIndexParamsDistributeParams.from_dict(
                     obj["distribute_params"]
                 )
-                if obj.get("distribute_params") is not None
-                else None
             )
-
-        _obj = cls.model_validate(model_values)
-        # store additional fields in additional_properties
-        for _key in obj.keys():
-            if _key not in cls.__properties:
-                _obj.additional_properties[_key] = obj.get(_key)
-
-        return _obj
+        instance = cls.model_validate(values)
+        for key, value in obj.items():
+            if key not in cls.__properties:
+                instance.additional_properties[key] = value
+        return instance
