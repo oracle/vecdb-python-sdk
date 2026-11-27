@@ -12,6 +12,9 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Union, cast
 
+from urllib3.util.retry import Retry
+
+from ._logging import _CURRENT_OPERATION, _record_http_status, _log_phase
 from .data_types import (
     DatabaseSummaryResponse,
     DeleteVectorsResponse,
@@ -63,6 +66,8 @@ from .vecdb_exception import VecDBException
 
 DEFAULT_MAX_RETRY_DELAY = 60.0
 
+_SAFE_TRANSPORT_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 class _CustomApiClient(ApiClient):
     """Handwritten adapter for generator-owned request plumbing.
@@ -76,6 +81,19 @@ class _CustomApiClient(ApiClient):
         {"VecDBTableNoLinks", "VecDBTableCollection"}
     )
 
+    def __init__(self, configuration: ORDSBaseConfiguration) -> None:
+        super().__init__(configuration)
+        # urllib3 otherwise retries DELETE and PUT requests by default. Limit
+        # transport retries to HTTP-safe methods so mutation requests cannot
+        # be replayed after an ambiguous response.
+        retry_policy = Retry.from_int(configuration.retries)
+        self.rest_client.pool_manager.connection_pool_kw["retries"] = (
+            # TLS errors can occur after a write and bypass allowed_methods.
+            retry_policy.new(
+                allowed_methods=_SAFE_TRANSPORT_RETRY_METHODS, other=0
+            )
+        )
+
     def call_api(
         self,
         method: Any,
@@ -87,14 +105,21 @@ class _CustomApiClient(ApiClient):
     ) -> Any:
         if _request_timeout is None:
             _request_timeout = getattr(self.configuration, "timeout", None)
-        return super().call_api(
-            method,
-            url,
-            header_params,
-            body,
-            post_params,
-            _request_timeout,
-        )
+        if _CURRENT_OPERATION.get() is None:
+            return super().call_api(
+                method, url, header_params, body, post_params, _request_timeout
+            )
+        with _log_phase("http_call") as observation:
+            response = super().call_api(
+                method,
+                url,
+                header_params,
+                body,
+                post_params,
+                _request_timeout,
+            )
+            _record_http_status(observation, response)
+            return response
 
     @staticmethod
     def _remove_implicit_distribution_sentinel(value: Any) -> bool:
@@ -139,6 +164,21 @@ class _CustomApiClient(ApiClient):
         content_type: Optional[str],
     ) -> Any:
         """Normalize PL/SQL's implicit sentinel before generated parsing."""
+        if _CURRENT_OPERATION.get() is None:
+            return self._deserialize_normalized(
+                response_text, response_type, content_type
+            )
+        with _log_phase("deserialize"):
+            return self._deserialize_normalized(
+                response_text, response_type, content_type
+            )
+
+    def _deserialize_normalized(
+        self,
+        response_text: str,
+        response_type: Any,
+        content_type: Optional[str],
+    ) -> Any:
         response_name = (
             response_type
             if isinstance(response_type, str)

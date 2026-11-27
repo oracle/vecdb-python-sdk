@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict
 
 import pytest
@@ -35,6 +36,36 @@ class TransportError(Exception):
         self.reason = reason
         self.headers = headers or {}
         super().__init__(reason)
+
+
+@pytest.mark.parametrize(
+    "configured_retries, expected_total",
+    [(None, 3), (5, 5)],
+)
+def test_api_client_limits_transport_retries_to_http_safe_methods(
+    configured_retries, expected_total
+):
+    config = Configuration(rest_url=VALID_HOST, retries=configured_retries)
+    client = ords_module._CustomApiClient(config)
+    retry_policy = client.rest_client.pool_manager.connection_pool_kw["retries"]
+
+    assert retry_policy.total == expected_total  # nosec B101
+    assert retry_policy.other == 0  # nosec B101
+    assert retry_policy.allowed_methods == frozenset(
+        {"GET", "HEAD", "OPTIONS"}
+    )  # nosec B101
+
+
+def test_retry_classification_covers_every_decorated_ords_operation():
+    decorated_operations = {
+        name
+        for name, value in vars(ORDSService).items()
+        if isinstance(value, ORDSResponseHandler)
+    }
+
+    assert decorated_operations == set(
+        ORDSResponseHandler._RETRY_CLASSIFICATIONS
+    )  # nosec B101
 
 
 def test_sdk_api_client_uses_configured_default_timeout(mocker):
@@ -301,6 +332,41 @@ def test_retry_after_handler_does_not_retry_unsafe_operations():
         Endpoint().create_index()
 
     assert raised.value is error  # nosec B101
+
+
+def test_write_that_commits_then_loses_response_is_not_retried(caplog):
+    caplog.set_level(logging.DEBUG, logger="oracle_vecdb")
+    committed_writes = []
+
+    class Endpoint:
+        config = Configuration(rest_url=VALID_HOST)
+
+        @ORDSResponseHandler
+        def upsert_vectors(self, **kwargs):
+            committed_writes.append("vector-1")
+            if len(committed_writes) == 1:
+                raise urllib3.exceptions.ProtocolError(
+                    "response lost after server commit"
+                )
+            return "upserted"
+
+    with pytest.raises(urllib3.exceptions.ProtocolError):
+        from oracle_vecdb import OracleVecDB
+
+        client = OracleVecDB(Endpoint.config)
+        client._ords_service = Endpoint()
+        client.upsert_vectors("TEST_TABLE", [{"id": "1"}])
+
+    assert committed_writes == ["vector-1"]  # nosec B101
+    events = [
+        record.vecdb for record in caplog.records if hasattr(record, "vecdb")
+    ]
+    assert any(  # nosec B101
+        event["event"] == "retry.stopped"
+        and event["operation"] == "upsert_vectors"
+        and event["reason"] == "error_not_retryable"
+        for event in events
+    )
 
 
 def test_retry_delay_is_zero_when_configuration_value_is_invalid():
@@ -1371,3 +1437,61 @@ def test_public_paged_responses_preserve_ords_aliases():
     }
     response = service.list_vector_tables()
     assert response.has_more is True  # nosec B101
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_transport_tls_failure_does_not_repeat_mutations(monkeypatch, method):
+    client = ords_module._CustomApiClient(
+        Configuration(rest_url=VALID_HOST, retries=2)
+    )
+    attempts = []
+
+    def committed_then_failed(
+        pool, connection, request_method, url, *args, **kwargs
+    ):
+        attempts.append(request_method)
+        raise urllib3.exceptions.SSLError("simulated TLS response loss")
+
+    monkeypatch.setattr(
+        urllib3.connectionpool.HTTPSConnectionPool,
+        "_make_request",
+        committed_then_failed,
+    )
+    with pytest.raises(urllib3.exceptions.MaxRetryError):
+        client.call_api(method, VALID_HOST)
+    assert attempts == [method]  # nosec B101
+
+
+@pytest.mark.parametrize("first_status", [429, 555])
+@pytest.mark.parametrize("recover", [False, True])
+def test_alternating_errors_share_finite_retry_budgets(
+    monkeypatch, first_status, recover
+):
+    service = _make_service()
+    service.config = Configuration(rest_url=VALID_HOST)
+    service.config.ords_settings.max_retry_count_error_429 = 1
+    service.config.ords_settings.max_retry_count_error_555 = 1
+    attempts = []
+
+    def alternating(*args, **kwargs):
+        other_status = 555 if first_status == 429 else 429
+        status = first_status if len(attempts) % 2 == 0 else other_status
+        attempts.append(status)
+        if recover and len(attempts) == 3:
+            return {"items": []}
+        raise TransportError(
+            status=status,
+            reason="Transient response",
+            headers={"Retry-After": "0"},
+        )
+
+    monkeypatch.setattr(service.table_api, "list_vector_tables", alternating)
+    monkeypatch.setattr(
+        response_handlers_module.time, "sleep", lambda delay: None
+    )
+    if recover:
+        service.list_vector_tables()
+    else:
+        with pytest.raises(VecDBException):
+            service.list_vector_tables()
+    assert len(attempts) == 3  # nosec B101

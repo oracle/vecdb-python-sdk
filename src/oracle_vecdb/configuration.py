@@ -3,7 +3,6 @@
 ## Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/
 ##
 
-# coding: utf-8
 
 """
 Public configuration facade and generated-configuration extensions.
@@ -16,11 +15,9 @@ re-merging these changes.
 from __future__ import annotations
 
 import copy
-import logging
 import math
 import os
 import re
-from logging import FileHandler
 import multiprocessing
 import sys
 from typing import (
@@ -385,7 +382,6 @@ class ConfigurationManualMixin:
         key_file: Optional[str] = None,
         *,
         rest_url: Optional[str] = None,
-        debug: Optional[bool] = None,
     ) -> None:
         """Constructor"""
         self._validate_non_empty_rest_url(
@@ -483,30 +479,6 @@ class ConfigurationManualMixin:
         self.access_token = access_token
         """Access token
         """
-        self.logger = {}
-        """Logging Settings
-        """
-        self.logger["package_logger"] = logging.getLogger("internal")
-        self.logger["urllib3_logger"] = logging.getLogger("urllib3")
-        self.logger_format = "%(asctime)s %(levelname)s %(message)s"
-        """Log format
-        """
-        self.logger_stream_handler = None
-        """Log stream handler
-        """
-        self.logger_file_handler: Optional[FileHandler] = None
-        """Log file handler
-        """
-        self.logger_file = None
-        """Debug file location
-        """
-        if debug is not None:
-            self.debug = debug
-        else:
-            self.__debug = False
-        """Debug switch
-        """
-
         self.verify_ssl = verify_ssl
         """SSL/TLS verification
            Set this to false to skip verifying SSL certificate when calling API
@@ -573,13 +545,7 @@ class ConfigurationManualMixin:
         result = cls.__new__(cls)
         memo[id(self)] = result
         for k, v in self.__dict__.items():
-            if k not in ("logger", "logger_file_handler"):
-                setattr(result, k, copy.deepcopy(v, memo))
-        # shallow copy of loggers
-        result.logger = copy.copy(self.logger)
-        # use setters to configure loggers
-        result.logger_file = self.logger_file
-        result.debug = self.debug
+            setattr(result, k, copy.deepcopy(v, memo))
         return result
 
     @property
@@ -630,88 +596,6 @@ class ConfigurationManualMixin:
         if cls._default is None:
             cls._default = cls()
         return cls._default
-
-    @property
-    def logger_file(self) -> Optional[str]:
-        """The logger file.
-
-        If the logger_file is None, then add stream handler and remove file
-        handler. Otherwise, add file handler and remove stream handler.
-
-        :param value: The logger_file path.
-        :type: str
-        """
-        return self.__logger_file
-
-    @logger_file.setter
-    def logger_file(self, value: Optional[str]) -> None:
-        """The logger file.
-
-        If the logger_file is None, then add stream handler and remove file
-        handler. Otherwise, add file handler and remove stream handler.
-
-        :param value: The logger_file path.
-        :type: str
-        """
-        self.__logger_file = value
-        if self.__logger_file:
-            # If set logging file,
-            # then add file handler and remove stream handler.
-            self.logger_file_handler = logging.FileHandler(self.__logger_file)
-            self.logger_file_handler.setFormatter(self.logger_formatter)
-            for _, logger in self.logger.items():
-                logger.addHandler(self.logger_file_handler)
-
-    @property
-    def debug(self) -> bool:
-        """Debug status
-
-        :param value: The debug status, True or False.
-        :type: bool
-        """
-        return self.__debug
-
-    @debug.setter
-    def debug(self, value: bool) -> None:
-        """Debug status
-
-        :param value: The debug status, True or False.
-        :type: bool
-        """
-        self.__debug = value
-        if self.__debug:
-            # Enable SDK/urllib3 logging only; never enable process-global wire
-            # logging, which can emit Authorization headers and credentials.
-            for _, logger in self.logger.items():
-                logger.setLevel(logging.DEBUG)
-        else:
-            # if debug status is False, turn off debug logging,
-            # setting log level to default `logging.WARNING`
-            for _, logger in self.logger.items():
-                logger.setLevel(logging.WARNING)
-
-    @property
-    def logger_format(self) -> str:
-        """The logger format.
-
-        The logger_formatter will be updated when sets logger_format.
-
-        :param value: The format string.
-        :type: str
-        """
-        return self.__logger_format
-
-    @logger_format.setter
-    def logger_format(self, value: str) -> None:
-        """The logger format.
-
-        The logger_formatter will be updated when sets logger_format.
-
-        :param value: The format string.
-        :type: str
-        """
-        self.__logger_format = value
-        self.logger_formatter = logging.Formatter(self.__logger_format)
 
     def get_api_key_with_prefix(
         self, identifier: str, alias: Optional[str] = None
@@ -875,12 +759,36 @@ class ConfigurationManualMixin:
         self._set_base_path(value)
 
 
+class _RemovedLoggingSetting:
+    """Mask generator-owned logging controls on the public configuration."""
+
+    def __get__(self, instance: Any, owner: Any = None) -> Any:
+        raise AttributeError(
+            "Configure SDK logging with VECDB_DEBUG or Python logging"
+        )
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        raise AttributeError(
+            "Configure SDK logging with VECDB_DEBUG or Python logging"
+        )
+
+
 def apply_configuration_extensions(target_cls: type) -> type:
     """Patch handwritten SDK behavior onto a generated Configuration class."""
     for name, value in vars(ConfigurationManualMixin).items():
         if name in {"__dict__", "__weakref__", "__module__", "__doc__"}:
             continue
         setattr(target_cls, name, value)
+    for name in (
+        "debug",
+        "logger",
+        "logger_file",
+        "logger_file_handler",
+        "logger_stream_handler",
+        "logger_format",
+        "logger_formatter",
+    ):
+        setattr(target_cls, name, _RemovedLoggingSetting())
     return target_cls
 
 

@@ -46,6 +46,7 @@ dev = [
 test = [
     "pytest",                   # Testing framework
     "pytest-cov",               # Test coverage tool
+    "coverage==7.16.2",         # Avoid SQLite read-only failures seen with 7.17.1 in CI
     "pytest-mock",              # Mocker
     "pytest-xdist",             # Parallel test execution
     "lxml",                     # Generate XML report
@@ -60,9 +61,11 @@ doc = [
 [project.urls]
 Repository = "https://github.com/oracle/vecdb-python-sdk"
 Homepage = "https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vcapi/overview.html"
+"Autonomous AI Vector Database" = "https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/"
+"PL/SQL DBMS_VECTOR_DATABASE" = "https://docs.oracle.com/en/database/oracle/oracle-database/26/arpls/dbms_vector_database1.html"
 
 [build-system]
-requires = ["setuptools>=65", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
