@@ -195,6 +195,9 @@ Learn Oracle VecDB hands-on. The Oracle AI Developer Hub includes runnable noteb
 - **[Hands-on Notebooks](https://github.com/oracle-devrel/oracle-ai-developer-hub/tree/main/notebooks/vecdb)**
 - **[GitHub Releases](https://github.com/oracle/vecdb-python-sdk/releases)**
 - **[Locally-managed REST](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.2/)**
+- **[Autonomous AI Vector Database Documentation](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/)**
+- **[Get Started Using Autonomous AI Vector Database](https://docs.oracle.com/en/cloud/paas/autonomous-vector-database/vecdb/get-started-using-autonomous-ai-vector-database.html)**
+- **[PL/SQL DBMS_VECTOR_DATABASE Package](https://docs.oracle.com/en/database/oracle/oracle-database/26/arpls/dbms_vector_database1.html)**
 
 ---
 

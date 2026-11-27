@@ -48,6 +48,7 @@ reports*/
 
 venv/
 .venv310/
+.venv311/
 .venv/
 .vscode/
 .python-version

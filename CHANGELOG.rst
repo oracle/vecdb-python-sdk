@@ -6,6 +6,30 @@ All notable changes to this project will be documented in this file.
 The format is based on the `Keep a Changelog <https://keepachangelog.com/en/1.1.0/>`__,
 and this project adheres to `Semantic Versioning <https://semver.org/spec/v2.0.0.html>`__.
 
+1.0.7 - 2026-11-27
+------------------
+
+Added
+~~~~~
+
+- Added ``VECDB_DEBUG`` to control SDK logging. Set it before importing
+  ``oracle_vecdb``; use levels such as ``INFO``, ``DEBUG``, ``TRACE``, or ``OFF``.
+- Added README links to the Autonomous AI Vector Database documentation,
+  setup guide, and PL/SQL package reference.
+
+Changed
+~~~~~~~
+
+- Use
+  ``VECDB_DEBUG`` to enable logging and Python logging handlers to choose
+  the output destination and format.
+
+Fixed
+~~~~~
+
+- Prevented automatic retries from repeating write operations when a
+  connection or TLS failure leaves the request outcome uncertain.
+
 1.0.6 - 2026-10-16
 ------------------
 

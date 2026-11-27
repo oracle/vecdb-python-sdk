@@ -12,3 +12,7 @@ from .vecdb_errors import InsecureConnectionError  # noqa: F401
 from .vecdb_errors import InvalidHostFormatError  # noqa: F401
 from .vecdb_errors import OAuthTokenError  # noqa: F401
 from .vecdb_exception import VecDBException  # noqa: F401
+
+from ._logging import _configure_logging
+
+_configure_logging()

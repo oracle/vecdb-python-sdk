@@ -183,14 +183,17 @@ def validate_resource_name(
     """
     try:
         return ResourceName(resource_name=value).resource_name
-    except ValidationError as validation_error:
+    except ValidationError:
         error = error_factory(value)
-        raise VecDBException.from_service_error(
+        public_error = VecDBException.from_service_error(
             operation=operation,
             arguments={"kwargs": {parameter_name: value}},
             service_name="validation",
             error=error,
-        ) from validation_error
+        )
+
+    # The original validation exception retains the unsanitized input.
+    raise public_error from None
 
 
 def validate_resource_names(

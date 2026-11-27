@@ -430,47 +430,6 @@ def test_get_host_from_settings_invalid_index(monkeypatch):
         cfg.get_host_from_settings(5)
 
 
-def test_logger_file_sets_file_handler(tmp_path, monkeypatch):
-    _reset_env_vars(monkeypatch)
-
-    cfg = Configuration(rest_url=VALID_HOST)
-    log_file = tmp_path / "vecdb.log"
-
-    cfg.logger_file = str(log_file)
-
-    assert cfg.logger_file_handler is not None  # nosec B101
-    assert Path(cfg.logger_file_handler.baseFilename) == log_file  # nosec B101
-
-
-def test_configuration_deepcopy_preserves_logger_settings(
-    tmp_path, monkeypatch
-):
-    _reset_env_vars(monkeypatch)
-    cfg = Configuration(rest_url=VALID_HOST, debug=True)
-    cfg.logger_file = str(tmp_path / "copy.log")
-
-    clone = copy.deepcopy(cfg)
-
-    assert clone is not cfg  # nosec B101
-    assert clone.logger is not cfg.logger  # nosec B101
-    assert clone.logger_file == cfg.logger_file  # nosec B101
-    assert clone.debug is True  # nosec B101
-    clone.debug = False
-
-
-def test_logger_file_unwritable(monkeypatch):
-    _reset_env_vars(monkeypatch)
-    cfg = Configuration(rest_url=VALID_HOST)
-
-    def boom(*_, **__):
-        raise OSError("nope")
-
-    monkeypatch.setattr("logging.FileHandler", boom)
-
-    with pytest.raises(OSError):
-        cfg.logger_file = "/root/forbidden.log"
-
-
 def test_get_basic_auth_token_handles_missing_fields(monkeypatch):
     _reset_env_vars(monkeypatch)
     cfg = Configuration(rest_url=VALID_HOST, username=None, password=None)
@@ -544,7 +503,7 @@ def test_proxy_settings_constructor(monkeypatch):
     assert cfg.proxy_headers["Authorization"] == "Basic abc"  # nosec B101
 
 
-def test_debug_property_does_not_toggle_process_global_http_debug(monkeypatch):
+def test_removed_debug_setting_does_not_toggle_http_wire_logging(monkeypatch):
     _reset_env_vars(monkeypatch)
     cfg = Configuration(rest_url=VALID_HOST)
 
@@ -553,9 +512,11 @@ def test_debug_property_does_not_toggle_process_global_http_debug(monkeypatch):
     original = http.client.HTTPConnection.debuglevel
     http.client.HTTPConnection.debuglevel = 7
     try:
-        cfg.debug = True
+        with pytest.raises(AttributeError, match="VECDB_DEBUG"):
+            cfg.debug = True
         assert http.client.HTTPConnection.debuglevel == 7  # nosec B101
-        cfg.debug = False
+        with pytest.raises(AttributeError, match="VECDB_DEBUG"):
+            cfg.debug = False
         assert http.client.HTTPConnection.debuglevel == 7  # nosec B101
     finally:
         http.client.HTTPConnection.debuglevel = original
@@ -586,22 +547,6 @@ def test_generated_configuration_debug_does_not_toggle_global_http_debug_or_log_
         http.client.HTTPConnection.debuglevel = original
 
 
-def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
-    _reset_env_vars(monkeypatch)
-    access_token = "Bearer test-token-that-must-not-be-logged"  # nosec
-    cfg = Configuration(
-        rest_url=VALID_HOST,
-        access_token=access_token,
-    )
-
-    with caplog.at_level("DEBUG"):
-        cfg.debug = True
-        cfg.logger["package_logger"].debug("SDK debug logging enabled")
-
-    assert access_token not in caplog.text  # nosec B101
-    assert "test-password" not in caplog.text  # nosec B101
-
-
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -617,14 +562,6 @@ def test_debug_true_does_not_log_configured_credentials(caplog, monkeypatch):
 def test_configuration_rejects_conflicting_or_partial_authentication(kwargs):
     with pytest.raises(ValueError, match="authentication"):
         Configuration(rest_url=VALID_HOST, **kwargs)
-
-
-def test_configuration_debug_constructor_sets_debug(monkeypatch):
-    _reset_env_vars(monkeypatch)
-    cfg = Configuration(rest_url=VALID_HOST, debug=True)
-
-    assert cfg.debug is True  # nosec B101
-    cfg.debug = False
 
 
 def test_configuration_default_cache_uses_direct_base_class(monkeypatch):
@@ -672,8 +609,6 @@ def test_ords_base_configuration_properties(monkeypatch):
     cfg = ORDSBaseConfiguration(rest_url=VALID_HOST)
 
     assert cfg.has_rest_url is True  # nosec B101
-    assert cfg.logger_file is None  # nosec B101
-    assert "%(levelname)s" in cfg.logger_format  # nosec B101
 
 
 def test_ords_base_configuration_reports_missing_rest_url():
@@ -683,3 +618,36 @@ def test_ords_base_configuration_reports_missing_rest_url():
         ORDSBaseConfiguration.has_rest_url.__get__(cfg, ORDSBaseConfiguration)
         is False
     )  # nosec B101
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "debug",
+        "logger",
+        "logger_file",
+        "logger_file_handler",
+        "logger_stream_handler",
+        "logger_format",
+        "logger_formatter",
+    ],
+)
+def test_generated_logging_controls_are_unavailable(name, monkeypatch):
+    _reset_env_vars(monkeypatch)
+    cfg = Configuration(rest_url=VALID_HOST)
+    assert not hasattr(cfg, name)  # nosec B101
+    with pytest.raises(AttributeError, match="VECDB_DEBUG"):
+        setattr(cfg, name, True)
+
+
+def test_configuration_copy_has_no_logging_state(monkeypatch):
+    _reset_env_vars(monkeypatch)
+    cfg = Configuration(rest_url=VALID_HOST)
+    clone = copy.deepcopy(cfg)
+    assert clone is not cfg  # nosec B101
+    assert clone.rest_url == cfg.rest_url  # nosec B101
+    assert not any(
+        "logger" in key or "diagnostic" in key for key in vars(clone)
+    )  # nosec B101
+    with pytest.raises(TypeError, match="debug"):
+        Configuration(rest_url=VALID_HOST, debug=True)

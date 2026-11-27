@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import traceback
 from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple, cast
 
@@ -919,3 +920,29 @@ def test_public_methods_missing_required_args(method_name, kwargs):
 
     with pytest.raises(TypeError):
         method(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "method,error_type",
+    [
+        ("describe_vector_table", InvalidTableNameFormatError),
+        ("describe_model", InvalidModelNameFormatError),
+        ("describe_vector_load_job", InvalidLoadJobNameFormatError),
+        ("describe_index_job", InvalidIndexJobNameFormatError),
+    ],
+)
+def test_invalid_resource_name_traceback_does_not_retain_raw_input(
+    mocker, method, error_type
+):
+    client, backend, _ = _make_client(mocker)
+    canary = "AUDITCANARY438291"
+    with pytest.raises(VecDBException) as raised:
+        getattr(client, method)({"password": canary})
+    error = raised.value
+    assert error.is_original_exception(error_type)  # nosec B101
+    assert error.__cause__ is None  # nosec B101
+    assert error.__context__ is None  # nosec B101
+    assert canary not in "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )  # nosec B101
+    assert not backend.calls  # nosec B101
