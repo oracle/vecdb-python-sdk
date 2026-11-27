@@ -16,6 +16,11 @@ import json
 from typing import Any, Dict, List, Optional, Union, cast
 
 from .configuration import Configuration
+from ._logging import (
+    _record_upsert_batch,
+    _record_upsert_result,
+    _logging_wrapper,
+)
 from .ords import create_ords_service
 from .service_protocol import VecDBServiceProtocol
 from .data_types import (
@@ -200,6 +205,7 @@ class OracleVecDB:
     def _get_active_service(self) -> VecDBServiceProtocol:
         return self._get_ords_service()
 
+    @_logging_wrapper
     @set_default_arguments
     def describe_vector_database(self) -> DatabaseSummaryResponse:
         """
@@ -235,6 +241,7 @@ class OracleVecDB:
         """
         return self._get_active_service().describe_vector_database()
 
+    @_logging_wrapper
     @set_default_arguments
     def list_vector_tables(
         self, limit: Optional[int] = None, offset: Optional[int] = None
@@ -333,6 +340,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
@@ -385,7 +393,8 @@ class OracleVecDB:
             ``{'vector_index_params': {'auto_index': True, 'organization': 'PARTITIONS', 'advanced_params': {'partitions': 5}}, 'parallel_creation': 4}``
 
         :type index_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -498,6 +507,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def describe_vector_table(self, name: str) -> VectorTableResponse:
@@ -572,6 +582,7 @@ class OracleVecDB:
             name=name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def drop_vector_table(self, name: str) -> DropVectorTableResponse:
@@ -621,6 +632,7 @@ class OracleVecDB:
             name=name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(name=InvalidTableNameFormatError)
     def update_vector_table_annotation(
@@ -642,7 +654,8 @@ class OracleVecDB:
         :param annotations: New annotations to replace existing ones.
             Annotations are completely replaced, not merged.
         :type annotations: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -689,6 +702,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def generate_embedding(
@@ -707,7 +721,8 @@ class OracleVecDB:
         :type model_name: str
         :param inputs: List of text inputs to embed. Can be list of dicts: ``[{'text': 'text1'}, {'text': 'text2'}]``
         :type inputs: list
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -769,6 +784,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def upsert_vectors(
@@ -790,7 +806,8 @@ class OracleVecDB:
             - For tables with embedding models: Dict with 'id' and 'metadata'
             (vector generated automatically from configured metadata field)
         :type vectors: list
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         If table is configured with auto generated as True, then you don't need to provide id as part of the upsert object.
@@ -875,11 +892,13 @@ class OracleVecDB:
             raise InvalidVectorsError()
         payload_size = self._upsert_vectors_json_size(vectors)
         if payload_size <= _MAX_UPSERT_BATCH_BYTES:
-            return self._get_active_service().upsert_vectors(
+            response = self._get_active_service().upsert_vectors(
                 table_name=table_name,
                 vectors=vectors,
                 debug_flags=debug_flags,
             )
+            _record_upsert_result(response)
+            return response
         return self._upsert_vectors_in_batches(
             table_name=table_name,
             vectors=vectors,
@@ -970,11 +989,13 @@ class OracleVecDB:
             if isinstance(response, dict)
             else response.upserted_count
         )
+        _record_upsert_batch(count)
         if count is not None:
             total += count
             has_count = True
         return total, has_count
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
@@ -1000,7 +1021,8 @@ class OracleVecDB:
         :type limit: int, optional
         :param offset: Number of records to skip for pagination.
         :type offset: int, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -1086,6 +1108,7 @@ class OracleVecDB:
         )
 
     # VectorApi methods
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def delete_vectors(
@@ -1104,7 +1127,8 @@ class OracleVecDB:
         :type table_name: str
         :param ids: List of vector IDs to delete. Example: ``['id1', 'id2', 'id3']``.
         :type ids: list
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -1145,6 +1169,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def load_vectors(
@@ -1168,7 +1193,8 @@ class OracleVecDB:
         :type url: str
         :param params: Optional parameters for the load operation. Example: ``{'credential': 'OCI_CREDENTIAL'}`` if object storage URL requires authentication. Refer to the Oracle Cloud Infrastructure documentation for configuring object storage credentials: ``https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/managingcredentials.htm``.
         :type params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         The object storage URL should point to a CSV file with the following format:
@@ -1243,6 +1269,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     def list_vector_load_jobs(
         self, limit: Optional[int] = None, offset: Optional[int] = None
@@ -1299,6 +1326,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(load_job_name=InvalidLoadJobNameFormatError)
     def describe_vector_load_job(self, load_job_name: str) -> JobResponse:
@@ -1355,6 +1383,7 @@ class OracleVecDB:
             load_job_name=load_job_name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(load_job_name=InvalidLoadJobNameFormatError)
     def get_vector_load_job_log(self, load_job_name: str) -> JobLogResponse:
@@ -1415,6 +1444,7 @@ class OracleVecDB:
         )
 
     # SearchApi methods
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
@@ -1490,7 +1520,8 @@ class OracleVecDB:
         :param output_selector: Metadata keys to include in each result. An empty
             list projects no metadata; ``None`` returns full metadata.
         :type output_selector: list[str], optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -1611,6 +1642,7 @@ class OracleVecDB:
 
     # SummaryApi methods
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     def rerank(
@@ -1638,7 +1670,8 @@ class OracleVecDB:
         :param model_params: Model configuration. Example:
             ``{'top_n': 5}`` to return only top 5 reranked results.
         :type model_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -1723,6 +1756,7 @@ class OracleVecDB:
     # ModelApi methods
 
     # IndexApi methods
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
@@ -1758,7 +1792,8 @@ class OracleVecDB:
             ``{'vector_index_params': {'organization': 'INMEMORY GRAPH', 'distance_metric': 'COSINE', 'distribute_params': {'distribute_method': 'AUTO'}, 'advanced_params': {'neighbors': 32, 'efConstruction': 200}}, 'parallel_creation': 4}``
 
         :type index_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -1858,6 +1893,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     def list_index_jobs(
         self, limit: Optional[int] = None, offset: Optional[int] = None
@@ -1905,6 +1941,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(index_job_name=InvalidIndexJobNameFormatError)
     def describe_index_job(self, index_job_name: str) -> JobResponse:
@@ -1969,6 +2006,7 @@ class OracleVecDB:
             index_job_name=index_job_name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(index_job_name=InvalidIndexJobNameFormatError)
     def get_index_job_log(self, index_job_name: str) -> JobLogResponse:
@@ -2031,6 +2069,7 @@ class OracleVecDB:
             index_job_name=index_job_name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_common_spec_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
@@ -2055,7 +2094,8 @@ class OracleVecDB:
             controls the optional parallel DDL degree. ``vector_index_params``
             and ``metadata_index_params`` mirror ``create_index()``.
         :type index_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -2092,6 +2132,7 @@ class OracleVecDB:
 
     # InferenceApi methods
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def describe_index(self, table_name: str) -> IndexDescriptionResponse:
@@ -2131,6 +2172,7 @@ class OracleVecDB:
             table_name=table_name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(table_name=InvalidTableNameFormatError)
     def drop_index(
@@ -2153,7 +2195,8 @@ class OracleVecDB:
         :type table_name: str
         :param index_params: Index deletion scope and options.
         :type index_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -2193,6 +2236,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     def list_models(
         self, limit: Optional[int] = None, offset: Optional[int] = None
@@ -2263,6 +2307,7 @@ class OracleVecDB:
             limit=limit, offset=offset
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def load_model(
@@ -2287,7 +2332,8 @@ class OracleVecDB:
         :param model_params: Model loading parameters. Example:
             ``{'provider': 'database', 'credential': 'OCI_CRED', 'metadata': {...}}``.
         :type model_params: dict, optional
-        :param debug_flags: Debug configuration for detailed logging.
+        :param debug_flags: Server-side VecDB debug flags, independent of SDK logging
+          controlled by VECDB_DEBUG.
         :type debug_flags: dict, optional
 
         Returns:
@@ -2357,6 +2403,7 @@ class OracleVecDB:
             debug_flags=debug_flags,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def describe_model(self, model_name: str) -> ModelResponse:
@@ -2424,6 +2471,7 @@ class OracleVecDB:
             model_name=model_name,
         )
 
+    @_logging_wrapper
     @set_default_arguments
     @validate_resource_names(model_name=InvalidModelNameFormatError)
     def drop_model(self, model_name: str) -> DropModelResponse:

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import urllib3
 
 from .vecdb_errors import OAuthTokenError
+from ._logging import _logging_wrapper
 
 Timeout = Union[float, Tuple[float, float]]
 OAuthTokenResponse = Dict[str, Any]
@@ -17,6 +18,7 @@ OAuthTokenResponse = Dict[str, Any]
 _SUPPORTED_SOCKS_PROXIES = frozenset({"socks5", "socks5h", "socks4", "socks4a"})
 
 
+@_logging_wrapper
 def get_vecdb_oauth_token(
     *,
     client_id: str,
@@ -125,11 +127,12 @@ def get_vecdb_oauth_token(
 
         payload = _parse_response(response.data, safe_endpoint)
         _validate_token_response(payload, safe_endpoint)
-        return payload
 
     except OAuthTokenError:
         raise
     except (urllib3.exceptions.HTTPError, OSError, ValueError):
+        # Raise outside the handler so raw transport details are not retained
+        # as exception context.
         transport_failed = True
     finally:
         if response is not None:
@@ -142,6 +145,8 @@ def get_vecdb_oauth_token(
             safe_endpoint,
             "transport or request configuration failure",
         ) from None
+
+    return payload
 
 
 def _validate_credentials(

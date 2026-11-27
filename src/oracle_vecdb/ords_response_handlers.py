@@ -1,8 +1,9 @@
 """Small response handlers shared by the ORDS service facade."""
 
-from functools import wraps
-from email.utils import parsedate_to_datetime
 from datetime import timezone
+from email.utils import parsedate_to_datetime
+from functools import wraps
+import logging
 import math
 import secrets
 import time
@@ -10,33 +11,44 @@ from types import MethodType
 from typing import Any, Callable
 
 from .vecdb_exception import VecDBException
+from ._logging import _log_event, _log_phase
 
 
 class ORDSResponseHandler:
     """Callable wrapper for extensible ORDS response handling."""
 
-    # Some read-only operations use POST because their request filters are
-    # JSON bodies. Keep retry policy semantic and fail closed for new methods.
-    _RETRY_SAFE_OPERATIONS = frozenset(
-        {
-            "describe_vector_database",
-            "list_vector_tables",
-            "describe_vector_table",
-            "generate_embedding",
-            "list_vectors",
-            "list_vector_load_jobs",
-            "describe_vector_load_job",
-            "get_vector_load_job_log",
-            "query",
-            "rerank",
-            "list_index_jobs",
-            "describe_index_job",
-            "get_index_job_log",
-            "describe_index",
-            "list_models",
-            "describe_model",
-        }
-    )
+    # Classify every decorated ORDS operation explicitly. Unknown operations
+    # fail closed until their retry behavior is reviewed.
+    _RETRY_CLASSIFICATIONS = {
+        "describe_vector_database": "safe",
+        "list_vector_tables": "safe",
+        "create_vector_table": "non-idempotent",
+        "describe_vector_table": "safe",
+        "drop_vector_table": "non-idempotent",
+        "update_vector_table_annotation": "non-idempotent",
+        "generate_embedding": "safe",
+        "upsert_vectors": "non-idempotent",
+        "list_vectors": "safe",
+        "delete_vectors": "non-idempotent",
+        "load_vectors": "non-idempotent",
+        "list_vector_load_jobs": "safe",
+        "describe_vector_load_job": "safe",
+        "get_vector_load_job_log": "safe",
+        "query": "safe",
+        "rerank": "safe",
+        "create_index": "non-idempotent",
+        "list_index_jobs": "safe",
+        "describe_index_job": "safe",
+        "get_index_job_log": "safe",
+        "rebuild_index": "non-idempotent",
+        "describe_index": "safe",
+        "drop_index": "non-idempotent",
+        "list_models": "safe",
+        "load_model": "non-idempotent",
+        "describe_model": "safe",
+        "drop_model": "non-idempotent",
+    }
+    _RETRYABLE_CLASSIFICATIONS = frozenset({"safe", "idempotent"})
 
     def __init__(self, function: Callable[..., Any]) -> None:
         self.function = function
@@ -57,6 +69,7 @@ class ORDSResponseHandler:
         except VecDBException:
             # The handwritten ORDS adapter has already added operation and
             # argument context. Do not retry or wrap it a second time.
+            self._log_retry_decision("already_normalized")
             raise
         except Exception as error:
             return self._handle_exception(error, *args, **kwargs)
@@ -65,69 +78,123 @@ class ORDSResponseHandler:
         self, error: Exception, *args: Any, **kwargs: Any
     ) -> Any:
         if self._is_555(error):
-            if not self._is_retry_safe_operation():
+            if not self._is_retryable_operation():
+                self._log_retry_decision("operation_not_retryable")
                 raise error
             return self.handle_555(error, *args, **kwargs)
         if self._is_429(error):
-            if not self._is_retry_safe_operation():
+            if not self._is_retryable_operation():
+                self._log_retry_decision("operation_not_retryable")
                 raise error
             return self.handle_429(error, *args, **kwargs)
+        self._log_retry_decision("error_not_retryable")
         raise error
 
-    def _is_retry_safe_operation(self) -> bool:
-        return self.function.__name__ in self._RETRY_SAFE_OPERATIONS
+    def _operation_retry_classification(self) -> str:
+        return self._RETRY_CLASSIFICATIONS.get(
+            self.function.__name__, "unclassified"
+        )
+
+    def _is_retryable_operation(self) -> bool:
+        return (
+            self._operation_retry_classification()
+            in self._RETRYABLE_CLASSIFICATIONS
+        )
+
+    def _log_retry_decision(self, reason: str, **values: Any) -> None:
+        _log_event(
+            "retry.stopped",
+            "ords",
+            logging.DEBUG,
+            reason=reason,
+            retry_owner="ords_response_handler",
+            **values,
+        )
 
     def handle_555(self, error: Exception, *args: Any, **kwargs: Any) -> Any:
         """Retry transient ORDS 555/ORDS-25001 responses."""
-        return self._retry(
-            error,
-            self._max_retries(args, "max_retry_count_error_555"),
-            self._is_555,
-            *args,
-            **kwargs,
-        )
+        return self._retry(error, *args, **kwargs)
 
     def handle_429(self, error: Exception, *args: Any, **kwargs: Any) -> Any:
         """Retry ORDS HTTP 429 responses in the public service facade."""
-        return self._retry(
-            error,
-            self._max_retries(args, "max_retry_count_error_429"),
-            self._is_429,
-            *args,
-            **kwargs,
-        )
+        return self._retry(error, *args, **kwargs)
 
     def _retry(
         self,
         error: Exception,
-        max_retries: int,
-        retryable: Callable[[Exception], bool],
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Retry one error type and redispatch a different subsequent error."""
+        """Keep each status's retry budget across the entire operation."""
+        limits = {
+            555: self._max_retries(args, "max_retry_count_error_555"),
+            429: self._max_retries(args, "max_retry_count_error_429"),
+        }
+        attempts = {555: 0, 429: 0}
         latest_error = error
-        for retry_number in range(max_retries):
-            self._sleep_before_retry(latest_error, retry_number, args)
+        while True:
+            if self._is_555(latest_error):
+                status = 555
+            elif self._is_429(latest_error):
+                status = 429
+            else:
+                self._log_retry_decision("error_not_retryable")
+                raise latest_error
+
+            retry_number = attempts[status]
+            max_retries = limits[status]
+            if retry_number >= max_retries:
+                self._log_retry_decision(
+                    (
+                        "retry_limit_zero"
+                        if max_retries == 0
+                        else "retry_limit_exhausted"
+                    ),
+                    attempt=1 + sum(attempts.values()),
+                    http_status=status,
+                )
+                raise latest_error
+
+            self._sleep_before_retry(
+                latest_error,
+                retry_number,
+                args,
+                attempt=1 + sum(attempts.values()),
+            )
+            # A status change must not replenish a consumed retry budget.
+            attempts[status] += 1
             try:
                 return self.function(*args, **kwargs)
             except VecDBException:
                 # The exception is already normalized and must not be retried
                 # or wrapped a second time.
+                self._log_retry_decision("already_normalized")
                 raise
             except Exception as next_error:
-                if retryable(next_error):
-                    latest_error = next_error
-                    continue
-                return self._handle_exception(next_error, *args, **kwargs)
-        raise latest_error
+                latest_error = next_error
 
     @classmethod
     def _sleep_before_retry(
-        cls, error: Exception, retry_number: int, args: tuple[Any, ...]
+        cls,
+        error: Exception,
+        retry_number: int,
+        args: tuple[Any, ...],
+        *,
+        attempt: int = 1,
     ) -> None:
         """Honor Retry-After and otherwise use bounded jittered backoff."""
         if not cls._is_429(error):
+            _log_event(
+                "retry.scheduled",
+                "ords",
+                logging.DEBUG,
+                reason="transient_status",
+                retry_owner="ords_response_handler",
+                attempt=attempt,
+                retry_number=attempt,
+                http_status=555,
+                delay_ms=0.0,
+            )
             return
 
         max_delay = cls._max_retry_delay(args)
@@ -141,7 +208,20 @@ class ORDSResponseHandler:
             # stall the caller indefinitely.
             retry_after = min(retry_after, max_delay)
 
-        time.sleep(retry_after)
+        _log_event(
+            "retry.scheduled",
+            "ords",
+            logging.DEBUG,
+            reason="transient_status",
+            retry_owner="ords_response_handler",
+            attempt=attempt,
+            retry_number=attempt,
+            http_status=429,
+            delay_ms=retry_after * 1000,
+        )
+        with _log_phase("retry_sleep") as observation:
+            time.sleep(retry_after)
+            observation["delay_ms"] = retry_after * 1000
 
     @staticmethod
     def _retry_after_seconds(error: Exception) -> float | None:
